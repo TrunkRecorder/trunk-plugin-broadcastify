@@ -1,0 +1,4 @@
+{
+  "config": { "server": "https://api.broadcastify.com/call-upload", "talkerAliases": true },
+  "systems": { "county": { "apiKey": "your-broadcastify-api-key", "systemId": 1234, "talkgroupDeny": ["99*"] } }
+}
