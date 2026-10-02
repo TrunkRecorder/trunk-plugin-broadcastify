@@ -1,6 +1,6 @@
 # Broadcastify Calls for Trunk Recorder Pro
 
-Uploads the calls [Trunk Recorder Pro](https://github.com/TrunkRecorder/trunk-recorder-lite)
+Uploads the calls [Trunk Recorder Pro](https://github.com/TrunkRecorder/trunk-recorder-pro)
 records to [Broadcastify Calls](https://www.broadcastify.com/calls/). It does
 what Trunk Recorder's built-in Broadcastify uploader does.
 
