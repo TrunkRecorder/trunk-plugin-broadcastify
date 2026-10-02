@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.1.1]
+
+- The API key and System ID are marked as needed for each system, so the recorder shows which systems aren't set up for Broadcastify yet.
+- Built with trunk-recorder-plugin 0.1.1.
+
 ## [0.1.0]
 
 - Uploads recorded calls to Broadcastify Calls as Trunk Recorder's uploader

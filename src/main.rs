@@ -49,13 +49,14 @@ struct SystemConfig {
     /// API key
     ///
     /// The upload key from your Broadcastify Calls node. Leave it empty to not upload this system.
-    #[schemars(extend("x-secret" = true))]
+    #[schemars(extend("x-secret" = true, "x-required" = true))]
     #[serde(alias = "broadcastifyApiKey")]
     api_key: String,
     /// System ID
     ///
     /// The system's number on Broadcastify Calls.
     #[serde(alias = "broadcastifySystemId")]
+    #[schemars(extend("x-required" = true))]
     system_id: Option<u32>,
     /// Only these talkgroups
     ///
