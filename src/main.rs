@@ -118,7 +118,7 @@ impl Plugin for Broadcastify {
             let filter = TalkgroupFilter::new(&c.talkgroup_allow, &c.talkgroup_deny);
             let filtered = if filter.is_empty() { String::new() } else { format!(", talkgroups: {}", filter.describe()) };
             host.info(format!("uploading {} as system {system_id} (key …{}){filtered}", s.short_name, last2(&api_key)));
-            targets.insert(s.index, Target { system_id, api_key, filter });
+            targets.insert(s.short_name.clone(), Target { system_id, api_key, filter });
         }
         if targets.is_empty() {
             return Err("Add your Broadcastify API key and system ID to the systems you want to upload.".into());
@@ -128,9 +128,10 @@ impl Plugin for Broadcastify {
         }
         let uploader = Uploader::new(&server, setup.config.skip_certificate_check);
         let aliases = setup.config.talker_aliases;
-        let opts = QueueOptions { noun: "upload", ..QueueOptions::saved_in(&setup.data_dir) };
+        let opts = QueueOptions { noun: "upload", endpoint: Some("Broadcastify Calls".into()), ..QueueOptions::saved_in(&setup.data_dir) };
         let queue = CallQueue::start(host, opts, move |call: &ConcludedCall| {
-            let Some(t) = targets.get(&call.system) else {
+            // By short name, a system's identity: a call saved for a later run still finds its system.
+            let Some(t) = targets.get(&call.call.short_name) else {
                 return Attempt::Skip("no Broadcastify API key for this system".into());
             };
             if call.call.encrypted {
