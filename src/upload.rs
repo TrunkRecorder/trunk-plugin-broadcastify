@@ -5,7 +5,7 @@
 use std::path::Path;
 use std::time::{Duration, UNIX_EPOCH};
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use trunk_recorder_plugin::{Attempt, ConcludedCall, Multipart};
 
 pub struct Uploader {

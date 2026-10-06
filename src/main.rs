@@ -10,7 +10,7 @@ use std::time::Duration;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use trunk_recorder_plugin::filter::patterns;
-use trunk_recorder_plugin::{format, topic, Attempt, CallQueue, ConcludedCall, Host, Manifest, Plugin, QueueOptions, Setup, TalkgroupFilter};
+use trunk_recorder_plugin::{Attempt, CallQueue, ConcludedCall, Host, Manifest, Plugin, QueueOptions, Setup, TalkgroupFilter, format, topic};
 
 use upload::{Upload, Uploader};
 
@@ -171,9 +171,9 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
     use trunk_recorder_plugin::testing::{self, MockServer, Request};
-    use trunk_recorder_plugin::{HostMessage, Outcome, State, EXIT_CONFIG};
+    use trunk_recorder_plugin::{EXIT_CONFIG, HostMessage, Outcome, State};
 
     /// Broadcastify as Trunk Recorder's uploader sees it: the metadata POST
     /// answers "0 <where to PUT the audio>" for key "good" and system 42.
