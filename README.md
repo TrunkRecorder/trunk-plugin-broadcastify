@@ -53,6 +53,13 @@ waiting. Calls still waiting when recording stops are kept, and sent when it
 starts again. A call Broadcastify answers `SKIPPED` is marked skipped; one it
 answers `REJECTED` is marked failed and not tried again.
 
+When Broadcastify turns down a system's settings (`1 Invalid-API-Key`, no API
+key, an unknown system ID, a key not allowed to upload that system), its calls
+fail at once instead of waiting on retries, and the plugin's status says what
+to fix, e.g. "Broadcastify refused the API key for dcfd — check the system's
+API key". (Trunk Recorder tries these calls again like any other failure, so a
+mistyped key looks like Broadcastify being down.)
+
 ## Coming from Trunk Recorder
 
 Trunk Recorder's settings can be pasted in as they are:

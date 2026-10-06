@@ -4,13 +4,14 @@
 
 mod upload;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::sync::Mutex;
 use std::time::Duration;
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use trunk_recorder_plugin::filter::patterns;
-use trunk_recorder_plugin::{Attempt, CallQueue, ConcludedCall, Host, Manifest, Plugin, QueueOptions, Setup, TalkgroupFilter, format, topic};
+use trunk_recorder_plugin::{Attempt, CallQueue, ConcludedCall, Host, Manifest, Plugin, QueueOptions, Setup, State, TalkgroupFilter, format, topic};
 
 use upload::{Upload, Uploader};
 
@@ -129,6 +130,9 @@ impl Plugin for Broadcastify {
         let uploader = Uploader::new(&server, setup.config.skip_certificate_check);
         let aliases = setup.config.talker_aliases;
         let opts = QueueOptions { noun: "upload", endpoint: Some("Broadcastify Calls".into()), ..QueueOptions::saved_in(&setup.data_dir) };
+        // Systems whose settings Broadcastify turned down, said once each.
+        let refused = Mutex::new(HashSet::new());
+        let status = host.clone();
         let queue = CallQueue::start(host, opts, move |call: &ConcludedCall| {
             // By short name, a system's identity: a call saved for a later run still finds its system.
             let Some(t) = targets.get(&call.call.short_name) else {
@@ -144,7 +148,17 @@ impl Plugin for Broadcastify {
                 return Attempt::Fail("this call couldn't be encoded as M4A".into());
             };
             let alias = if aliases { call.call.src_list.first().map(|s| s.tag_ota.trim()).filter(|a| !a.is_empty()) } else { None };
-            uploader.upload(&Upload { system_id: t.system_id, api_key: &t.api_key, alias, call, audio: m4a })
+            match uploader.upload(&Upload { system_id: t.system_id, api_key: &t.api_key, alias, call, audio: m4a }) {
+                Ok(a) => a,
+                // Trying again won't help (Trunk Recorder would): the call fails now, and the plugin's status says what to fix.
+                Err(r) => {
+                    let m = r.message(&call.call.short_name, t.system_id);
+                    if refused.lock().unwrap().insert(call.call.short_name.clone()) {
+                        status.status(State::Error, &m);
+                    }
+                    Attempt::Fail(m)
+                }
+            }
         });
         Ok(Broadcastify { queue })
     }
@@ -173,7 +187,7 @@ mod tests {
     use super::*;
     use serde_json::{Value, json};
     use trunk_recorder_plugin::testing::{self, MockServer, Request};
-    use trunk_recorder_plugin::{EXIT_CONFIG, HostMessage, Outcome, State};
+    use trunk_recorder_plugin::{EXIT_CONFIG, HostMessage, Outcome};
 
     /// Broadcastify as Trunk Recorder's uploader sees it: the metadata POST
     /// answers "0 <where to PUT the audio>" for key "good" and system 42.
@@ -257,6 +271,26 @@ mod tests {
         assert!(r[1].2.contains("not monitored"));
         // Neither sent audio.
         assert!(server.requests().iter().all(|q| q.method == "POST"));
+    }
+
+    #[test]
+    fn a_wrong_api_key_fails_at_once_and_says_so() {
+        let (dir, server) = (testing::temp_dir("bcfy"), broadcastify());
+        let out = testing::run::<Broadcastify>([
+            hello(&dir, server.url(), json!({ "apiKey": "typo", "systemId": 42 })),
+            HostMessage::CallConcluded(testing::call(&dir, "sys1", 5)),
+            HostMessage::CallConcluded(testing::call(&dir, "sys1", 6)),
+        ]);
+        let r = out.results();
+        assert_eq!(r.len(), 2, "{r:?}");
+        let refused = "Broadcastify refused the API key for sys1 — check the system's API key";
+        assert!(r.iter().all(|x| x.1 == Outcome::Failed && x.2.starts_with(refused)), "{r:?}");
+        // Not tried again, nor kept for later.
+        assert_eq!(server.requests().len(), 2);
+        assert!(!dir.join("data/queue.jsonl").exists());
+        let (state, message) = out.status().unwrap();
+        assert!(matches!(state, State::Error));
+        assert!(message.contains("refused the API key for sys1"), "{message}");
     }
 
     #[test]

@@ -36,10 +36,11 @@ impl Uploader {
         Uploader { agent, server: server.to_string() }
     }
 
-    pub fn upload(&self, u: &Upload) -> Attempt {
+    /// Sends the call; Err: Broadcastify turned down the node's settings.
+    pub fn upload(&self, u: &Upload) -> Result<Attempt, Refusal> {
         let audio = match std::fs::read(u.audio) {
             Ok(b) => b,
-            Err(e) => return Attempt::Fail(format!("can't read {}: {e}", u.audio.display())),
+            Err(e) => return Ok(Attempt::Fail(format!("can't read {}: {e}", u.audio.display()))),
         };
         let concluded = std::fs::metadata(&u.call.files.json).and_then(|m| m.modified()).ok();
         let concluded = concluded.and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map(|d| d.as_secs() as i64);
@@ -55,20 +56,78 @@ impl Uploader {
         let (body, content_type) = form.finish();
         let mut resp = match self.agent.post(&self.server).header("Content-Type", &content_type).send(&body) {
             Ok(r) => r,
-            Err(e) => return Attempt::Retry(e.to_string()),
+            Err(e) => return Ok(Attempt::Retry(e.to_string())),
         };
         let status = resp.status().as_u16();
         let text = resp.body_mut().read_to_string().unwrap_or_default();
+        if let Some(what) = refused(status, &text) {
+            return Err(Refusal { what, answer: text.trim().chars().take(200).collect() });
+        }
         let audio_url = match answer(status, &text) {
             Ok(url) => url,
-            Err(a) => return a,
+            Err(a) => return Ok(a),
         };
         let r = self.agent.put(&audio_url).header("Content-Type", "audio/aac").send(&audio[..]);
-        match r {
+        Ok(match r {
             Ok(r) if r.status().is_success() => Attempt::Done { url: String::new() },
             Ok(r) => Attempt::Retry(format!("audio upload: HTTP {}", r.status().as_u16())),
             Err(e) => Attempt::Retry(format!("audio upload: {e}")),
-        }
+        })
+    }
+}
+
+/// Which of the node's settings Broadcastify turned down.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Refused {
+    ApiKey,
+    SystemId,
+    /// The key and system ID don't go together, or the node isn't allowed to upload.
+    NotAllowed,
+}
+
+/// Broadcastify turned down the node's settings, and will turn down every
+/// call until they're changed.
+#[derive(Debug)]
+pub struct Refusal {
+    pub what: Refused,
+    /// What Broadcastify said.
+    pub answer: String,
+}
+
+impl Refusal {
+    pub fn message(&self, system: &str, system_id: u32) -> String {
+        let what = match self.what {
+            Refused::ApiKey => format!("Broadcastify refused the API key for {system} — check the system's API key"),
+            Refused::SystemId => format!("Broadcastify refused system ID {system_id} for {system} — check the system's Broadcastify system ID"),
+            Refused::NotAllowed => format!("Broadcastify won't take {system}'s calls as system {system_id} — check the system's API key and system ID"),
+        };
+        format!("{what} (Broadcastify said \"{}\")", self.answer)
+    }
+}
+
+/// Whether an answer turns down the node's settings. Trunk Recorder tries
+/// such a call again (twice, like any answer but SKIPPED and REJECTED), so a
+/// mistyped key looks like Broadcastify being down; here the call fails at
+/// once, and the plugin says what to fix.
+///
+/// Broadcastify documents `100 NO-API-KEY-SPECIFIED` ("do not retry without
+/// correcting"); it answers a wrong key with `1 Invalid-API-Key`. Other
+/// refusals are told apart by what they name.
+fn refused(status: u16, text: &str) -> Option<Refused> {
+    let text = text.trim();
+    let (code, message) = text.split_once(' ').unwrap_or((text, ""));
+    if status != 200 || code == "0" || message.starts_with("SKIPPED") || message.starts_with("REJECTED") {
+        return None;
+    }
+    let m = message.to_ascii_uppercase().replace(['_', ' '], "-");
+    if code == "100" || m.contains("API-KEY") || m.contains("APIKEY") {
+        Some(Refused::ApiKey)
+    } else if m.contains("SYSTEM") && ["INVALID", "UNKNOWN", "NO-", "BAD"].iter().any(|w| m.contains(w)) {
+        Some(Refused::SystemId)
+    } else if ["NOT-AUTHORIZED", "UNAUTHORIZED", "NOT-ALLOWED", "DENIED", "FORBIDDEN"].iter().any(|w| m.contains(w)) {
+        Some(Refused::NotAllowed)
+    } else {
+        None
     }
 }
 
@@ -89,7 +148,8 @@ fn answer(status: u16, text: &str) -> Result<String, Attempt> {
         "0" if message.starts_with("http") => Ok(message.trim().to_string()),
         "1" if message.starts_with("SKIPPED") => Err(Attempt::Skip(format!("Broadcastify: {message}"))),
         "1" if message.starts_with("REJECTED") => Err(Attempt::Fail(format!("Broadcastify: {message}"))),
-        // (Trunk Recorder tries anything else again.)
+        // (Trunk Recorder tries anything else again; so does this, but for
+        // the refusals `refused` picks out first.)
         _ => Err(Attempt::Retry(format!("Broadcastify: {}", if text.is_empty() { "an empty answer" } else { text }))),
     }
 }
@@ -133,10 +193,26 @@ mod tests {
         assert_eq!(answer(200, "0 https://s3.example/x.m4a?sig=1\n").unwrap(), "https://s3.example/x.m4a?sig=1");
         assert!(matches!(answer(200, "1 SKIPPED: duplicate"), Err(Attempt::Skip(_))));
         assert!(matches!(answer(200, "1 REJECTED: no such system"), Err(Attempt::Fail(_))));
-        assert!(matches!(answer(200, "1 Invalid-API-Key"), Err(Attempt::Retry(_))));
         assert!(matches!(answer(200, ""), Err(Attempt::Retry(_))));
+        assert!(matches!(answer(200, "1 Database busy"), Err(Attempt::Retry(_))));
         assert!(matches!(answer(502, "Bad gateway"), Err(Attempt::Retry(_))));
         assert!(matches!(answer(403, "Forbidden"), Err(Attempt::Fail(_))));
+    }
+
+    #[test]
+    fn refusals_of_the_settings() {
+        assert_eq!(refused(200, "1 Invalid-API-Key\n"), Some(Refused::ApiKey));
+        assert_eq!(refused(200, "100 NO-API-KEY-SPECIFIED"), Some(Refused::ApiKey));
+        assert_eq!(refused(200, "1 Invalid-System-ID"), Some(Refused::SystemId));
+        assert_eq!(refused(200, "1 API Key not authorized for system"), Some(Refused::ApiKey));
+        assert_eq!(refused(200, "1 Not-Authorized"), Some(Refused::NotAllowed));
+        // Not refusals: success, the answers Trunk Recorder knows, anything else, and HTTP errors.
+        for text in ["0 https://s3.example/x", "1 SKIPPED---ALREADY-RECEIVED-THIS-CALL", "1 REJECTED: no such system", "1 Database busy", ""] {
+            assert_eq!(refused(200, text), None, "{text}");
+        }
+        assert_eq!(refused(502, "Invalid-API-Key"), None);
+        let r = Refusal { what: Refused::ApiKey, answer: "1 Invalid-API-Key".into() };
+        assert_eq!(r.message("dcfd", 42), "Broadcastify refused the API key for dcfd — check the system's API key (Broadcastify said \"1 Invalid-API-Key\")");
     }
 
     #[test]

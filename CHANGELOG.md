@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.1.3]
+
+- A system whose API key or system ID Broadcastify turns down (`1 Invalid-API-Key`,
+  `100 NO-API-KEY-SPECIFIED`, an unknown system, a key not allowed to upload it)
+  fails its calls at once instead of retrying them for 20 minutes, and the
+  plugin's status says which system's settings to check. Trunk Recorder retries
+  these; a mistyped key looked like Broadcastify being down.
+
+## [0.1.2]
+
+- Knows systems by their short name (trunk-recorder-plugin 0.2.1).
+
 ## [0.1.1]
 
 - The API key and System ID are marked as needed for each system, so the recorder shows which systems aren't set up for Broadcastify yet.
