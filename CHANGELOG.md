@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+- A system can override the upload server, talker aliases and the certificate check; each server has its own upload queue, so one that's down doesn't hold up the others.
+- Built with trunk-recorder-plugin 0.3.0.
+
 ## [0.1.3]
 
 - A system whose API key or system ID Broadcastify turns down (`1 Invalid-API-Key`,

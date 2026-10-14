@@ -5,7 +5,7 @@
 mod upload;
 
 use std::collections::{HashMap, HashSet};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use schemars::JsonSchema;
@@ -75,6 +75,11 @@ struct SystemConfig {
 
 /// Where a system's calls go.
 struct Target {
+    /// The queue's lane for its server: its host ("" for Broadcastify's own).
+    lane: String,
+    uploader: Arc<Uploader>,
+    /// Send talker aliases.
+    aliases: bool,
     system_id: u32,
     api_key: String,
     filter: TalkgroupFilter,
@@ -82,6 +87,15 @@ struct Target {
 
 struct Broadcastify {
     queue: CallQueue,
+}
+
+/// A server's lane in the queue, and the name it goes by on the dashboard
+/// ("Broadcastify Calls at <host>"): Broadcastify's own is just "Broadcastify Calls".
+fn lane_of(server: &str) -> String {
+    if server == DEFAULT_SERVER {
+        return String::new();
+    }
+    server.split_once("://").map_or(server, |(_, r)| r).split('/').next().unwrap_or("").to_string()
 }
 
 impl Plugin for Broadcastify {
@@ -98,14 +112,12 @@ impl Plugin for Broadcastify {
     }
 
     fn start(host: Host, setup: Setup<Config, SystemConfig>) -> Result<Self, String> {
-        let server = setup.config.server.trim().to_string();
-        if !(server.starts_with("https://") || server.starts_with("http://")) {
-            return Err(format!("The upload server has to be a web address (https://…), not \"{server}\""));
-        }
         // Broadcastify takes AAC audio, not WAV.
         if !setup.has_format(format::M4A) {
             return Err("Broadcastify needs calls as M4A, and there's no M4A encoder on this computer. Install ffmpeg, then start recording again.".into());
         }
+        // One uploader for each server, and certificate check (a system can override either).
+        let mut uploaders: HashMap<(String, bool), Arc<Uploader>> = HashMap::new();
         let mut targets = HashMap::new();
         for s in &setup.systems {
             let Some(c) = &s.config else { continue };
@@ -116,24 +128,34 @@ impl Plugin for Broadcastify {
             let Some(system_id) = c.system_id.filter(|&id| id != 0) else {
                 return Err(format!("Add {}'s Broadcastify system ID (or clear its API key).", s.short_name));
             };
+            let server = s.settings.server.trim().to_string();
+            if !(server.starts_with("https://") || server.starts_with("http://")) {
+                return Err(format!("The upload server has to be a web address (https://…), not \"{server}\""));
+            }
+            let skip = s.settings.skip_certificate_check;
+            if skip {
+                host.warn(format!("not checking the certificate of {server} for {}", s.short_name));
+            }
+            let uploader = uploaders.entry((server.clone(), skip)).or_insert_with(|| Arc::new(Uploader::new(&server, skip))).clone();
             let filter = TalkgroupFilter::new(&c.talkgroup_allow, &c.talkgroup_deny);
             let filtered = if filter.is_empty() { String::new() } else { format!(", talkgroups: {}", filter.describe()) };
-            host.info(format!("uploading {} as system {system_id} (key …{}){filtered}", s.short_name, last2(&api_key)));
-            targets.insert(s.short_name.clone(), Target { system_id, api_key, filter });
+            let lane = lane_of(&server);
+            let to = if lane.is_empty() { String::new() } else { format!(" to {lane}") };
+            host.info(format!("uploading {}{to} as system {system_id} (key …{}){filtered}", s.short_name, last2(&api_key)));
+            targets.insert(s.short_name.clone(), Target { lane, uploader, aliases: s.settings.talker_aliases, system_id, api_key, filter });
         }
         if targets.is_empty() {
             return Err("Add your Broadcastify API key and system ID to the systems you want to upload.".into());
         }
-        if setup.config.skip_certificate_check {
-            host.warn("not checking Broadcastify's certificate");
-        }
-        let uploader = Uploader::new(&server, setup.config.skip_certificate_check);
-        let aliases = setup.config.talker_aliases;
+        // Each server is a lane of the queue: one that's down holds up no other.
+        let targets = Arc::new(targets);
+        let lanes = targets.clone();
         let opts = QueueOptions { noun: "upload", endpoint: Some("Broadcastify Calls".into()), ..QueueOptions::saved_in(&setup.data_dir) };
+        let lane = move |call: &ConcludedCall| lanes.get(&call.call.short_name).map(|t| t.lane.clone()).unwrap_or_default();
         // Systems whose settings Broadcastify turned down, said once each.
         let refused = Mutex::new(HashSet::new());
         let status = host.clone();
-        let queue = CallQueue::start(host, opts, move |call: &ConcludedCall| {
+        let queue = CallQueue::start_by(host, opts, lane, move |call: &ConcludedCall| {
             // By short name, a system's identity: a call saved for a later run still finds its system.
             let Some(t) = targets.get(&call.call.short_name) else {
                 return Attempt::Skip("no Broadcastify API key for this system".into());
@@ -147,8 +169,8 @@ impl Plugin for Broadcastify {
             let Some(m4a) = &call.files.m4a else {
                 return Attempt::Fail("this call couldn't be encoded as M4A".into());
             };
-            let alias = if aliases { call.call.src_list.first().map(|s| s.tag_ota.trim()).filter(|a| !a.is_empty()) } else { None };
-            match uploader.upload(&Upload { system_id: t.system_id, api_key: &t.api_key, alias, call, audio: m4a }) {
+            let alias = if t.aliases { call.call.src_list.first().map(|s| s.tag_ota.trim()).filter(|a| !a.is_empty()) } else { None };
+            match t.uploader.upload(&Upload { system_id: t.system_id, api_key: &t.api_key, alias, call, audio: m4a }) {
                 Ok(a) => a,
                 // Trying again won't help (Trunk Recorder would): the call fails now, and the plugin's status says what to fix.
                 Err(r) => {
@@ -187,7 +209,7 @@ mod tests {
     use super::*;
     use serde_json::{Value, json};
     use trunk_recorder_plugin::testing::{self, MockServer, Request};
-    use trunk_recorder_plugin::{EXIT_CONFIG, HostMessage, Outcome};
+    use trunk_recorder_plugin::{EXIT_CONFIG, HostMessage, Outcome, SystemInfo};
 
     /// Broadcastify as Trunk Recorder's uploader sees it: the metadata POST
     /// answers "0 <where to PUT the audio>" for key "good" and system 42.
@@ -364,5 +386,30 @@ mod tests {
         assert_eq!(s["properties"]["talkgroupAllow"]["items"]["type"], "string");
         assert_eq!(s["properties"]["systemId"]["type"], "integer");
         assert_eq!(m.config.unwrap()["properties"]["talkerAliases"]["default"], true);
+    }
+
+    /// A system can override the server, and whether talker aliases go.
+    #[test]
+    fn a_system_overrides_the_server_and_aliases() {
+        let (dir, main, other) = (testing::temp_dir("bcfy"), broadcastify(), broadcastify());
+        let mut h = testing::hello(&dir, json!({ "server": format!("{}/call-upload", main.url()) }));
+        h.systems[0].config = json!({ "apiKey": "good", "systemId": 42 });
+        h.systems.push(SystemInfo {
+            index: 1,
+            short_name: "sys2".into(),
+            kind: "p25".into(),
+            config: json!({ "apiKey": "good", "systemId": 42 }),
+            settings: json!({ "server": format!("{}/call-upload", other.url()), "talkerAliases": false }),
+        });
+        let mut one = testing::call(&dir, "sys1", 101);
+        one.call.src_list[0].tag_ota = "ENGINE 1".into();
+        let mut two = testing::call(&dir, "sys2", 202);
+        two.call.src_list[0].tag_ota = "ENGINE 2".into();
+        let out = testing::run::<Broadcastify>([HostMessage::Hello(h), HostMessage::CallConcluded(one), HostMessage::CallConcluded(two)]);
+        assert!(out.results().iter().all(|r| r.1 == Outcome::Ok), "{:?}", out.results());
+        let alias = |s: &MockServer| s.requests()[0].form_field("srcId_alias").map(|a| String::from_utf8(a).unwrap());
+        assert_eq!(alias(&main).as_deref(), Some("ENGINE 1"));
+        assert_eq!(alias(&other), None, "sys2 doesn't send aliases");
+        assert_eq!(other.requests().len(), 2, "metadata, then audio");
     }
 }
