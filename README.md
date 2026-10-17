@@ -29,6 +29,7 @@ For each system:
 | **System ID** | The system's number on Broadcastify Calls. |
 | **Only these talkgroups** | Upload these talkgroups and no others. Leave it empty to upload all of them. |
 | **Not these talkgroups** | Never upload these talkgroups. |
+| **Sites of their own** | A site of the system that Broadcastify Calls knows as a system of its own: its name (as under Sites in Setup), its system ID, and its API key if not the system's. Its calls go there; the system's other sites' go to the system's. |
 
 Talkgroups can be numbers or patterns: `*` stands for any digits and `?` for
 one, so `507*` is every talkgroup starting with 507 and `12???` is every
@@ -60,6 +61,17 @@ to fix, e.g. "Broadcastify refused the API key for dcfd — check the system's
 API key". (Trunk Recorder tries these calls again like any other failure, so a
 mistyped key looks like Broadcastify being down.)
 
+## Sites
+
+In Trunk Recorder Pro a system can have several sites, and a call heard on
+more than one is saved once, from the site that heard it best. Each call says
+which site that was. When Broadcastify Calls has one system for all of them,
+there is nothing to set. When it has a system for each site (as Trunk Recorder
+set them up, a system per site), list those sites under **Sites of their
+own**: a call goes to its site's system. A setup from before sites existed
+became one system with a site per old system, keeping the first one's
+Broadcastify settings; add the others' system IDs here.
+
 ## Coming from Trunk Recorder
 
 Trunk Recorder's settings can be pasted in as they are:
@@ -67,6 +79,8 @@ Trunk Recorder's settings can be pasted in as they are:
 are the plugin's settings, and each system's `broadcastifyApiKey`,
 `broadcastifySystemId`, `broadcastifyAllow` and `broadcastifyDeny` (or the
 older `…Whitelist` / `…Blacklist` names) are its settings for that system.
+Trunk Recorder systems that are sites of one system (`multiSite`) are one
+system here: give each site's system ID under **Sites of their own**.
 
 ## Building
 
