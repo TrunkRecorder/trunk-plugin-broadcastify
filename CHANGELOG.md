@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.1.5]
+
+- A system's sites: Trunk Recorder Pro now has systems with several sites, and a
+  call heard on more than one is saved once, saying which site it was kept
+  from. A site that Broadcastify Calls knows as a system of its own can have
+  its own system ID (and API key) under **Sites of their own**; its calls go
+  there.
+- Built with trunk-recorder-plugin 0.4.0.
+
 ## [0.1.4]
 
 - A system can override the upload server, talker aliases and the certificate check; each server has its own upload queue, so one that's down doesn't hold up the others.

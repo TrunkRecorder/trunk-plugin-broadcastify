@@ -71,6 +71,29 @@ struct SystemConfig {
     #[serde(alias = "broadcastifyDeny", alias = "broadcastifyBlacklist", alias = "talkgroupBlacklist", deserialize_with = "patterns")]
     #[schemars(with = "Vec<String>")]
     talkgroup_deny: Vec<String>,
+    /// Sites of their own
+    ///
+    /// A site of this system that Broadcastify Calls knows as a system of its own: its calls go there instead.
+    sites: Vec<SiteConfig>,
+}
+
+/// A site with a Broadcastify Calls system of its own.
+#[derive(Serialize, Deserialize, JsonSchema, Default)]
+#[serde(rename_all = "camelCase", default)]
+struct SiteConfig {
+    /// Site
+    ///
+    /// Its name, as under Sites in Setup.
+    site: String,
+    /// System ID
+    ///
+    /// Its number on Broadcastify Calls.
+    system_id: Option<u32>,
+    /// API key
+    ///
+    /// Its upload key, when not the system's.
+    #[schemars(extend("x-secret" = true))]
+    api_key: String,
 }
 
 /// Where a system's calls go.
@@ -82,7 +105,16 @@ struct Target {
     aliases: bool,
     system_id: u32,
     api_key: String,
+    /// Sites with a Broadcastify Calls system of their own: (system ID, API key), by site name.
+    sites: HashMap<String, (u32, String)>,
     filter: TalkgroupFilter,
+}
+
+impl Target {
+    /// Where a call heard on `site` goes: its own system, else the system's.
+    fn of(&self, site: &str) -> (u32, &str) {
+        self.sites.get(site).map_or((self.system_id, self.api_key.as_str()), |(id, key)| (*id, key.as_str()))
+    }
 }
 
 struct Broadcastify {
@@ -142,7 +174,20 @@ impl Plugin for Broadcastify {
             let lane = lane_of(&server);
             let to = if lane.is_empty() { String::new() } else { format!(" to {lane}") };
             host.info(format!("uploading {}{to} as system {system_id} (key …{}){filtered}", s.short_name, last2(&api_key)));
-            targets.insert(s.short_name.clone(), Target { lane, uploader, aliases: s.settings.talker_aliases, system_id, api_key, filter });
+            let mut sites = HashMap::new();
+            for x in &c.sites {
+                let site = x.site.trim();
+                if site.is_empty() {
+                    return Err(format!("Name the site of {} that has a Broadcastify system of its own.", s.short_name));
+                }
+                let Some(id) = x.system_id.filter(|&id| id != 0) else {
+                    return Err(format!("Add the Broadcastify system ID of {}'s site {site}.", s.short_name));
+                };
+                let key = if x.api_key.trim().is_empty() { api_key.clone() } else { x.api_key.trim().to_string() };
+                host.info(format!("uploading {}'s site {site} as system {id} (key …{})", s.short_name, last2(&key)));
+                sites.insert(site.to_string(), (id, key));
+            }
+            targets.insert(s.short_name.clone(), Target { lane, uploader, aliases: s.settings.talker_aliases, system_id, api_key, sites, filter });
         }
         if targets.is_empty() {
             return Err("Add your Broadcastify API key and system ID to the systems you want to upload.".into());
@@ -170,12 +215,18 @@ impl Plugin for Broadcastify {
                 return Attempt::Fail("this call couldn't be encoded as M4A".into());
             };
             let alias = if t.aliases { call.call.src_list.first().map(|s| s.tag_ota.trim()).filter(|a| !a.is_empty()) } else { None };
-            match t.uploader.upload(&Upload { system_id: t.system_id, api_key: &t.api_key, alias, call, audio: m4a }) {
+            let (system_id, api_key) = t.of(&call.call.site);
+            match t.uploader.upload(&Upload { system_id, api_key, alias, call, audio: m4a }) {
                 Ok(a) => a,
                 // Trying again won't help (Trunk Recorder would): the call fails now, and the plugin's status says what to fix.
                 Err(r) => {
-                    let m = r.message(&call.call.short_name, t.system_id);
-                    if refused.lock().unwrap().insert(call.call.short_name.clone()) {
+                    // A site of its own is named so ("dcfd's site south").
+                    let who = match t.sites.contains_key(&call.call.site) {
+                        true => format!("{}'s site {}", call.call.short_name, call.call.site),
+                        false => call.call.short_name.clone(),
+                    };
+                    let m = r.message(&who, system_id);
+                    if refused.lock().unwrap().insert(who) {
                         status.status(State::Error, &m);
                     }
                     Attempt::Fail(m)
@@ -386,6 +437,32 @@ mod tests {
         assert_eq!(s["properties"]["talkgroupAllow"]["items"]["type"], "string");
         assert_eq!(s["properties"]["systemId"]["type"], "integer");
         assert_eq!(m.config.unwrap()["properties"]["talkerAliases"]["default"], true);
+    }
+
+    /// A site with a Broadcastify Calls system of its own: its calls go there, the system's other sites' to the system's.
+    #[test]
+    fn a_site_of_its_own() {
+        let (dir, server) = (testing::temp_dir("bcfy"), broadcastify());
+        let mut h = testing::hello(&dir, json!({ "server": format!("{}/call-upload", server.url()) }));
+        h.systems[0].config = json!({ "apiKey": "good", "systemId": 42, "sites": [{ "site": "south", "systemId": 77 }] });
+        let mut north = testing::call(&dir, "sys1", 101);
+        north.call.site = "north".into();
+        let mut south = testing::call(&dir, "sys1", 102);
+        south.call.site = "south".into();
+        testing::run::<Broadcastify>([HostMessage::Hello(h), HostMessage::CallConcluded(north), HostMessage::CallConcluded(south)]);
+        // (Each call's metadata names its system; the order they go in isn't fixed.)
+        let sent = |field: &str| {
+            let mut v: Vec<String> = server.requests().iter().filter_map(|r| r.form_field(field)).map(|v| String::from_utf8(v).unwrap()).collect();
+            v.sort();
+            v
+        };
+        assert_eq!(sent("systemId"), ["42", "77"]);
+        assert_eq!(sent("apiKey"), ["good", "good"], "the system's key, the site having none of its own");
+        // A site of its own needs its name and system ID.
+        let mut h = testing::hello(&dir, json!({}));
+        h.systems[0].config = json!({ "apiKey": "good", "systemId": 42, "sites": [{ "site": "south" }] });
+        let out = testing::run::<Broadcastify>([HostMessage::Hello(h)]);
+        assert!(format!("{out:?}").contains("site south"), "{out:?}");
     }
 
     /// A system can override the server, and whether talker aliases go.
