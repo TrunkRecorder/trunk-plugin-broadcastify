@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.1.6]
+
+- Built with trunk-recorder-plugin 0.5.0, for Trunk Recorder Pro v0.2.0: systems are numbered
+  from 0 there, conventional ones too, and the call record names every field the recorder writes
+  (the call's length in ms is read from it directly).
+
 ## [0.1.5]
 
 - A system's sites: Trunk Recorder Pro now has systems with several sites, and a

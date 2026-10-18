@@ -164,7 +164,7 @@ fn answer(status: u16, text: &str) -> Result<String, Attempt> {
 /// files keep their real times.
 fn metadata(c: &ConcludedCall, concluded: Option<i64>) -> (Value, i64) {
     let mut v = serde_json::to_value(&c.call).unwrap_or_default();
-    let length_ms = v["call_length_ms"].as_i64().filter(|&l| l > 0).unwrap_or((c.call.call_length * 1000.0).round() as i64);
+    let length_ms = Some(c.call.call_length_ms).filter(|&l| l > 0).unwrap_or((c.call.call_length * 1000.0).round() as i64);
     if let Some(end) = concluded.filter(|&t| t > 0 && length_ms > 0) {
         let stop_ms = end * 1000;
         let start_ms = stop_ms - length_ms;
@@ -220,7 +220,7 @@ mod tests {
         let mut c = ConcludedCall::default();
         c.call.call_length = 4.0;
         assert_eq!(metadata(&c, None).1, 4000);
-        c.call.extra.insert("call_length_ms".into(), json!(4320));
+        c.call.call_length_ms = 4320;
         let (v, ms) = metadata(&c, Some(1_700_000_010));
         assert_eq!(ms, 4320);
         assert_eq!(v["start_time_ms"], 1_700_000_005_680i64);

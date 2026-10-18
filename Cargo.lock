@@ -16,7 +16,7 @@ checksum = "ac07cdecf99051d9a5238b80f35af32cdeba5b336e55d957b318b50137e18da5"
 
 [[package]]
 name = "broadcastify"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "schemars",
  "serde",
@@ -372,9 +372,9 @@ dependencies = [
 
 [[package]]
 name = "trunk-recorder-plugin"
-version = "0.4.0"
+version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "587edb957af1d5bd2cd1a8a0e362419d731d95b78e3ca4181a1494d0f8831753"
+checksum = "3a7504b42cca72ec6457beb7ac279f3a4fbe16054f86be57eb1e28a70dd6394d"
 dependencies = [
  "schemars",
  "serde",
