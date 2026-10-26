@@ -372,9 +372,9 @@ dependencies = [
 
 [[package]]
 name = "trunk-recorder-plugin"
-version = "0.7.1"
+version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a0073e3423a7c66c9a24188a8764040e761398e8c41b9dfa36d553b53aaf2cbb"
+checksum = "9da2b5da860ea26119864505f20aa59c0628c8d7959bdef9c794ec1868fc21c1"
 dependencies = [
  "schemars",
  "serde",

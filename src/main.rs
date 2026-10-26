@@ -161,7 +161,7 @@ impl Plugin for Broadcastify {
                 host.warn(format!("not checking the certificate of {server} for {}", s.short_name));
             }
             let uploader = uploaders.entry((server.clone(), skip)).or_insert_with(|| Arc::new(Uploader::new(&server, skip))).clone();
-            let filter = c.talkgroups.filter_for(&host, &s.short_name)?;
+            let filter = c.talkgroups.filter_for(&s.short_name)?;
             let filtered = if filter.is_empty() { String::new() } else { format!(", talkgroups: {}", filter.describe()) };
             let lane = lane_of(&server);
             let to = if lane.is_empty() { String::new() } else { format!(" to {lane}") };
@@ -361,7 +361,7 @@ mod tests {
     #[test]
     fn talkgroup_filters_and_trunk_recorders_setting_names() {
         let (dir, server) = (testing::temp_dir("bcfy"), broadcastify());
-        let system = json!({ "broadcastifyApiKey": "good", "broadcastifySystemId": 42, "broadcastifyAllow": ["10*", 205], "broadcastifyDeny": ["109"] });
+        let system = json!({ "broadcastifyApiKey": "good", "broadcastifySystemId": 42, "talkgroupMode": "only", "talkgroupAllow": ["10*", 205], "talkgroupDeny": ["109"] });
         let mut h = testing::hello(&dir, json!({ "broadcastifyCallsServer": format!("{}/call-upload", server.url()), "broadcastifyOTA": false }));
         h.systems[0].config = system;
         let out = testing::run::<Broadcastify>([

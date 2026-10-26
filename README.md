@@ -79,9 +79,9 @@ Broadcastify settings; add the others' system IDs here.
 
 Trunk Recorder's settings can be pasted in as they are:
 `broadcastifyCallsServer`, `broadcastifyOTA` and `broadcastifySslVerifyDisable`
-are the plugin's settings, and each system's `broadcastifyApiKey`,
-`broadcastifySystemId`, `broadcastifyAllow` and `broadcastifyDeny` (or the
-older `…Whitelist` / `…Blacklist` names) are its settings for that system.
+are the plugin's settings, and each system's `broadcastifyApiKey` and
+`broadcastifySystemId` are its settings for that system. Its talkgroup lists
+are set with the **Talkgroups** menu.
 Trunk Recorder systems that are sites of one system (`multiSite`) are one
 system here: give each site's system ID under **Sites of their own**.
 
