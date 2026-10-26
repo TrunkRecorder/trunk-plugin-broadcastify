@@ -1,6 +1,6 @@
 [package]
 name = "broadcastify"
-version = "0.1.6"
+version = "0.1.7"
 edition = "2024"
 description = "Uploads recorded calls to Broadcastify Calls."
 license = "GPL-3.0-or-later"
@@ -10,7 +10,7 @@ authors = ["Luke Berndt <lukekb@gmail.com>"]
 publish = false
 
 [dependencies]
-trunk-recorder-plugin = "0.5.0"
+trunk-recorder-plugin = "0.8.0"
 schemars = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -20,3 +20,4 @@ ureq = "3"
 [profile.release]
 strip = true
 lto = true
+

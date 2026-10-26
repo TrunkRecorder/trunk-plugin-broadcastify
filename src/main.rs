@@ -10,8 +10,9 @@ use std::time::Duration;
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use trunk_recorder_plugin::filter::patterns;
-use trunk_recorder_plugin::{Attempt, CallQueue, ConcludedCall, Host, Manifest, Plugin, QueueOptions, Setup, State, TalkgroupFilter, format, topic};
+use trunk_recorder_plugin::{
+    Attempt, CallQueue, ConcludedCall, Host, Manifest, Plugin, QueueOptions, Setup, State, TalkgroupFilter, Talkgroups, format, topic,
+};
 
 use upload::{Upload, Uploader};
 
@@ -59,18 +60,9 @@ struct SystemConfig {
     #[serde(alias = "broadcastifySystemId")]
     #[schemars(extend("x-required" = true))]
     system_id: Option<u32>,
-    /// Only these talkgroups
-    ///
-    /// Upload these talkgroups and no others: numbers, or patterns like 507* (* stands for any digits, ? for one). Leave it empty to upload every talkgroup.
-    #[serde(alias = "broadcastifyAllow", alias = "broadcastifyWhitelist", alias = "talkgroupWhitelist", deserialize_with = "patterns")]
-    #[schemars(with = "Vec<String>")]
-    talkgroup_allow: Vec<String>,
-    /// Not these talkgroups
-    ///
-    /// Never upload these talkgroups: numbers or patterns, as above.
-    #[serde(alias = "broadcastifyDeny", alias = "broadcastifyBlacklist", alias = "talkgroupBlacklist", deserialize_with = "patterns")]
-    #[schemars(with = "Vec<String>")]
-    talkgroup_deny: Vec<String>,
+    // The talkgroups to upload: a menu, and the lists it asks for.
+    #[serde(flatten)]
+    talkgroups: Talkgroups,
     /// Sites of their own
     ///
     /// A site of this system that Broadcastify Calls knows as a system of its own: its calls go there instead.
@@ -169,7 +161,7 @@ impl Plugin for Broadcastify {
                 host.warn(format!("not checking the certificate of {server} for {}", s.short_name));
             }
             let uploader = uploaders.entry((server.clone(), skip)).or_insert_with(|| Arc::new(Uploader::new(&server, skip))).clone();
-            let filter = TalkgroupFilter::new(&c.talkgroup_allow, &c.talkgroup_deny);
+            let filter = c.talkgroups.filter_for(&s.short_name)?;
             let filtered = if filter.is_empty() { String::new() } else { format!(", talkgroups: {}", filter.describe()) };
             let lane = lane_of(&server);
             let to = if lane.is_empty() { String::new() } else { format!(" to {lane}") };
@@ -369,7 +361,7 @@ mod tests {
     #[test]
     fn talkgroup_filters_and_trunk_recorders_setting_names() {
         let (dir, server) = (testing::temp_dir("bcfy"), broadcastify());
-        let system = json!({ "broadcastifyApiKey": "good", "broadcastifySystemId": 42, "broadcastifyAllow": ["10*", 205], "broadcastifyDeny": ["109"] });
+        let system = json!({ "broadcastifyApiKey": "good", "broadcastifySystemId": 42, "talkgroupMode": "only", "talkgroupAllow": ["10*", 205], "talkgroupDeny": ["109"] });
         let mut h = testing::hello(&dir, json!({ "broadcastifyCallsServer": format!("{}/call-upload", server.url()), "broadcastifyOTA": false }));
         h.systems[0].config = system;
         let out = testing::run::<Broadcastify>([
@@ -386,6 +378,34 @@ mod tests {
         assert_eq!(posts.len(), 2);
         // Talker aliases off: none sent.
         assert!(posts[0].form_field("srcId_alias").is_none());
+    }
+
+    /// The menu: only a range, except one of it; all but some; and an entry that isn't a talkgroup stops it starting.
+    #[test]
+    fn talkgroups_chosen_in_the_menu() {
+        let (dir, server) = (testing::temp_dir("bcfy"), broadcastify());
+        let sent = |system: Value, tgs: &[u32]| {
+            let mut msgs = vec![hello(&dir, server.url(), system)];
+            msgs.extend(tgs.iter().map(|&tg| HostMessage::CallConcluded(testing::call(&dir, "sys1", tg))));
+            let out = testing::run::<Broadcastify>(msgs);
+            let mut ok: Vec<u32> = out
+                .results()
+                .iter()
+                .filter(|r| r.1 == Outcome::Ok)
+                .map(|r| r.0.split('/').next_back().unwrap()[..4].trim_end_matches('-').parse().unwrap())
+                .collect();
+            ok.sort();
+            (ok, out)
+        };
+        let only = json!({ "apiKey": "good", "systemId": 42, "talkgroupMode": "only", "talkgroupAllow": ["1000 - 1099"], "talkgroupDeny": [1050] });
+        let (ok, out) = sent(only, &[1000, 1050, 1099, 2000]);
+        assert_eq!(ok, [1000, 1099]);
+        assert!(out.logs().iter().any(|l| l.1.contains("talkgroups: only 1000-1099; except 1050")), "{:?}", out.logs());
+        let but = json!({ "apiKey": "good", "systemId": 42, "talkgroupMode": "allBut", "talkgroupAllow": ["1000-1099"], "talkgroupDeny": ["20??"] });
+        assert_eq!(sent(but, &[1000, 2001, 3000]).0, [1000, 3000], "the hidden allow list doesn't apply");
+        let (_, out) = sent(json!({ "apiKey": "good", "systemId": 42, "talkgroupMode": "only", "talkgroupAllow": ["10OO"] }), &[]);
+        assert_eq!(out.exit_code, EXIT_CONFIG);
+        assert!(out.status().unwrap().1.starts_with("sys1's talkgroups: \"10OO\" isn't a talkgroup"), "{:?}", out.status());
     }
 
     #[test]
@@ -433,8 +453,9 @@ mod tests {
     fn the_settings_form() {
         let m = trunk_recorder_plugin::describe::<Broadcastify>();
         let s = m.system_config.unwrap();
-        assert_eq!(s["properties"]["talkgroupAllow"]["type"], "array");
-        assert_eq!(s["properties"]["talkgroupAllow"]["items"]["type"], "string");
+        assert_eq!(s["properties"]["talkgroupMode"]["enum"], json!(["all", "only", "allBut"]));
+        assert_eq!(s["properties"]["talkgroupAllow"]["x-when"], json!({ "talkgroupMode": "only" }));
+        assert_eq!(s["x-order"], json!(["apiKey", "systemId", "talkgroupMode", "talkgroupAllow", "talkgroupDeny", "sites"]));
         assert_eq!(s["properties"]["systemId"]["type"], "integer");
         assert_eq!(m.config.unwrap()["properties"]["talkerAliases"]["default"], true);
     }
@@ -477,6 +498,7 @@ mod tests {
             kind: "p25".into(),
             config: json!({ "apiKey": "good", "systemId": 42 }),
             settings: json!({ "server": format!("{}/call-upload", other.url()), "talkerAliases": false }),
+            ..Default::default()
         });
         let mut one = testing::call(&dir, "sys1", 101);
         one.call.src_list[0].tag_ota = "ENGINE 1".into();

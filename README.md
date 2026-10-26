@@ -27,14 +27,17 @@ For each system:
 |---|---|
 | **API key** | Your node's upload key. Leave it empty to not upload that system. |
 | **System ID** | The system's number on Broadcastify Calls. |
-| **Only these talkgroups** | Upload these talkgroups and no others. Leave it empty to upload all of them. |
-| **Not these talkgroups** | Never upload these talkgroups. |
+| **Talkgroups** | **Every talkgroup**, **Only some** or **All but some**. |
+| **Only these** | With **Only some**: upload these talkgroups and no others. |
+| **Except these** | With **Only some** or **All but some**: never upload these. |
 | **Sites of their own** | A site of the system that Broadcastify Calls knows as a system of its own: its name (as under Sites in Setup), its system ID, and its API key if not the system's. Its calls go there; the system's other sites' go to the system's. |
 
-Talkgroups can be numbers or patterns: `*` stands for any digits and `?` for
-one, so `507*` is every talkgroup starting with 507 and `12???` is every
-five-digit one starting with 12. When both lists are set, a talkgroup has to
-be in the first and not in the second.
+Talkgroups can be numbers, ranges or patterns: `1000-1099` is every talkgroup
+from 1000 to 1099, `*` stands for any digits and `?` for one, so `507*` is
+every talkgroup starting with 507 and `12???` every five-digit one starting
+with 12. Separate them with commas or spaces. The plugin won't start with an
+entry that's none of these, and says which. Lists saved before the menu still
+apply (the log says so); choose the menu once to see them on the card.
 
 ## What it does with calls
 
@@ -76,9 +79,9 @@ Broadcastify settings; add the others' system IDs here.
 
 Trunk Recorder's settings can be pasted in as they are:
 `broadcastifyCallsServer`, `broadcastifyOTA` and `broadcastifySslVerifyDisable`
-are the plugin's settings, and each system's `broadcastifyApiKey`,
-`broadcastifySystemId`, `broadcastifyAllow` and `broadcastifyDeny` (or the
-older `…Whitelist` / `…Blacklist` names) are its settings for that system.
+are the plugin's settings, and each system's `broadcastifyApiKey` and
+`broadcastifySystemId` are its settings for that system. Its talkgroup lists
+are set with the **Talkgroups** menu.
 Trunk Recorder systems that are sites of one system (`multiSite`) are one
 system here: give each site's system ID under **Sites of their own**.
 

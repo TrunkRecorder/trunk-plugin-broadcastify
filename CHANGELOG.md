@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.1.7]
+
+- **Talkgroups** is a menu on each system's card: **Every talkgroup**, **Only some** (with
+  **Except these**) or **All but some**, each list shown when it applies. Lists take ranges
+  (`1000-1099`) as well as numbers and patterns, separated by commas or spaces, and the plugin
+  won't start with an entry that's none of them, saying which. **Breaking:** lists saved without a
+  menu choice no longer apply, and Trunk Recorder's `broadcastifyAllow` / `broadcastifyDeny` names
+  (and `…Whitelist` / `…Blacklist`) are no longer read: choose the menu on each system's card.
+- Built with trunk-recorder-plugin 0.8.0 (its `Talkgroups`), for Trunk Recorder Pro v0.2.10.
+
 ## [0.1.6]
 
 - Built with trunk-recorder-plugin 0.5.0, for Trunk Recorder Pro v0.2.0: systems are numbered
