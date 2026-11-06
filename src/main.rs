@@ -187,7 +187,8 @@ impl Plugin for Broadcastify {
         // Each server is a lane of the queue: one that's down holds up no other.
         let targets = Arc::new(targets);
         let lanes = targets.clone();
-        let opts = QueueOptions { noun: "upload", endpoint: Some("Broadcastify Calls".into()), ..QueueOptions::saved_in(&setup.data_dir) };
+        let opts =
+            QueueOptions { threads: UPLOAD_THREADS, noun: "upload", endpoint: Some("Broadcastify Calls".into()), ..QueueOptions::saved_in(&setup.data_dir) };
         let lane = move |call: &ConcludedCall| lanes.get(&call.call.short_name).map(|t| t.lane.clone()).unwrap_or_default();
         // Systems whose settings Broadcastify turned down, said once each.
         let refused = Mutex::new(HashSet::new());
@@ -236,6 +237,12 @@ impl Plugin for Broadcastify {
         self.queue.shutdown(grace);
     }
 }
+
+/// Uploads worked on at once, for each server. Every system sending to the
+/// same server shares them, and each upload is two round trips (the details,
+/// then the audio): at 4800 calls an hour, the SDK's 2 would leave each
+/// upload 1.5 s before calls start to wait.
+const UPLOAD_THREADS: usize = 4;
 
 /// The key's last two characters, to tell keys apart in the log.
 fn last2(key: &str) -> String {
