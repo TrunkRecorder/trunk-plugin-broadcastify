@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.2.0]
+
+- **Health reports.** Every 5 minutes, at a random point of its own, each system ID tells
+  Broadcastify how well this recorder hears it: control channel time decoding, messages decoded and
+  lost, calls announced and why any weren't recorded, voice frames lost, radios' dropped samples and
+  clipping. Broadcastify can then prefer the node hearing a system best, and tell a quiet node from
+  a down one. On by default (**Send health reports**); they need Trunk Recorder Pro 0.3.8 or later,
+  and stop for the run, said once, while Broadcastify doesn't take them. **Health report server**
+  sends them elsewhere.
+
 ## [0.1.8]
 
 - Four uploads at once for each server, up from two. Every system sending to the same server shares

@@ -20,6 +20,8 @@ what Trunk Recorder's built-in Broadcastify uploader does.
 | **Upload server** | Leave it as it is, unless Broadcastify tells you to change it. |
 | **Send talker aliases** | When the first radio on a call sent its name over the air, send that too. On by default. |
 | **Skip certificate checks** | Upload even when Broadcastify's certificate has expired. Leave it off unless uploads fail with a certificate error. |
+| **Send health reports** | Every 5 minutes, tell Broadcastify how well this recorder hears each system it uploads (see [Health reports](#health-reports)). On by default. |
+| **Health report server** | Leave it empty: reports go beside the upload server (`…/call-health`). |
 
 For each system:
 
@@ -63,6 +65,25 @@ fail at once instead of waiting on retries, and the plugin's status says what
 to fix, e.g. "Broadcastify refused the API key for dcfd — check the system's
 API key". (Trunk Recorder tries these calls again like any other failure, so a
 mistyped key looks like Broadcastify being down.)
+
+## Health reports
+
+Every 5 minutes, at a random point of its own, each node (a system ID) sends
+Broadcastify a [node health report](https://github.com/TrunkRecorder/trunk-recorder-pro/blob/main/docs/api/node-health.md):
+how many seconds the recorder was decoding the system's control channel, the
+control messages it decoded and lost, the calls the system announced and why
+any weren't recorded (no radio covering the frequency, every recorder busy),
+and the voice frames it lost, along with its radios' dropped samples and
+clipping. Totals only: no talkgroups, radios or audio. When several nodes
+upload one system, Broadcastify can take its calls from the one hearing it
+best, and can tell a node that's up but has no calls from one that's down.
+A site with a system ID of its own is reported to that ID alone.
+
+Reports need Trunk Recorder Pro 0.3.8 or later (an older one doesn't send the
+plugin what goes in them) and go on a thread of their own, so uploads never
+wait on them. A report that fails is carried by the next. Until Broadcastify
+takes them (an answer that isn't a report's), the plugin says so once and
+stops sending them until recording starts again.
 
 ## Sites
 
