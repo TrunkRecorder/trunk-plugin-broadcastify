@@ -74,9 +74,9 @@ how many seconds the recorder was decoding the system's control channel, the
 control messages it decoded and lost, the calls the system announced and why
 any weren't recorded (no radio covering the frequency, every recorder busy),
 and the voice frames it lost, along with its radios' dropped samples and
-clipping. When several nodes
-upload one system, Broadcastify can take its calls from the one hearing it
-best, and can tell a node that's up but has no calls from one that's down.
+clipping. When several nodes upload one system, Broadcastify can take its
+calls from the one hearing it best, and can tell a node that's up but has no
+calls from one that's down.
 A site with a system ID of its own is reported to that ID alone.
 
 Reports need Trunk Recorder Pro 0.3.8 or later (an older one doesn't send the
