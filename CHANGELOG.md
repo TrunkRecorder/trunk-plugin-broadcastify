@@ -8,7 +8,9 @@
   clipping. Broadcastify can then prefer the node hearing a system best, and tell a quiet node from
   a down one. On by default (**Send health reports**); they need Trunk Recorder Pro 0.3.8 or later,
   and stop for the run, said once, while Broadcastify doesn't take them. **Health report server**
-  sends them elsewhere.
+  sends them elsewhere. Turning them off leaves uploads as they are, but Broadcastify then can't
+  compare the node with others (it may get a lower priority or be left out) or tell you about
+  problems with it: see the README's [Health reports](README.md#health-reports).
 
 ## [0.1.8]
 

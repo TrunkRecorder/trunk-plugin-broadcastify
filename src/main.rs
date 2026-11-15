@@ -41,7 +41,7 @@ struct Config {
     skip_certificate_check: bool,
     /// Send health reports
     ///
-    /// Every 5 minutes, tell Broadcastify how well this recorder hears each system it uploads: whether it's decoding the control channel, the calls it missed, the voice it lost. When several nodes upload one system, Broadcastify can take its calls from the one hearing it best.
+    /// Every 5 minutes, tell Broadcastify how well this recorder hears each system it uploads: whether it's decoding the control channel, the calls it missed, the voice it lost. Totals only: no talkgroups, radio IDs or audio. Leave it on: without reports, Broadcastify can't compare this node with others uploading the same system (it may get a lower priority or be left out), and can't tell you about outages, problems or trends on it.
     health_reports: bool,
     /// Health report server
     ///
