@@ -298,6 +298,7 @@ mod tests {
         assert_eq!(out.results(), vec![(call.path.clone(), Outcome::Ok, String::new(), String::new())]);
         let r = server.requests();
         assert_eq!((r[0].method.as_str(), r[0].path.as_str()), ("POST", "/call-upload"));
+        assert_eq!(r[0].form_field("tg").as_deref(), Some(&b"101"[..]), "the talkgroup as a field too (a conventional node needs it)");
         let field = |n: &str| String::from_utf8(r[0].form_field(n).unwrap()).unwrap();
         assert_eq!(field("systemId"), "42");
         assert_eq!(field("apiKey"), "good");

@@ -34,6 +34,10 @@ For each system:
 | **Except these** | With **Only some** or **All but some**: never upload these. |
 | **Sites of their own** | A site of the system that Broadcastify Calls knows as a system of its own: its name (as under Sites in Setup), its system ID, and its API key if not the system's. Its calls go there; the system's other sites' go to the system's. |
 
+On a conventional node, Broadcastify knows each channel by its slot (1, 2, …
+in the order of the node's frequencies): set each channel's **TG Number** in the
+recorder to its slot.
+
 Talkgroups can be numbers, ranges or patterns: `1000-1099` is every talkgroup
 from 1000 to 1099, `*` stands for any digits and `?` for one, so `507*` is
 every talkgroup starting with 507 and `12???` every five-digit one starting
