@@ -131,6 +131,8 @@ impl Plugin for Broadcastify {
             name: "Broadcastify Calls".into(),
             subscribe: vec![topic::CALL_CONCLUDED.into()],
             audio_formats: vec![format::M4A.into()],
+            // Each read per system: a system can upload elsewhere, its own way.
+            system_overrides: vec!["server".into(), "talkerAliases".into(), "skipCertificateCheck".into()],
             ..trunk_recorder_plugin::manifest!()
         }
     }
@@ -464,7 +466,10 @@ mod tests {
         assert_eq!(s["properties"]["talkgroupAllow"]["x-when"], json!({ "talkgroupMode": "only" }));
         assert_eq!(s["x-order"], json!(["apiKey", "systemId", "talkgroupMode", "talkgroupAllow", "talkgroupDeny", "sites"]));
         assert_eq!(s["properties"]["systemId"]["type"], "integer");
-        assert_eq!(m.config.unwrap()["properties"]["talkerAliases"]["default"], true);
+        let c = m.config.unwrap();
+        assert_eq!(c["properties"]["talkerAliases"]["default"], true);
+        // What a system can set again is one of its settings.
+        assert!(m.system_overrides.iter().all(|k| c["properties"].get(k).is_some()), "{:?}", m.system_overrides);
     }
 
     /// A site with a Broadcastify Calls system of its own: its calls go there, the system's other sites' to the system's.
