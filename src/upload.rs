@@ -49,7 +49,10 @@ impl Uploader {
             .file("metadata", "call_meta.json", "application/json", meta.to_string().as_bytes())
             .text("callDuration", format!("{:.6}", length_ms as f64 / 1000.0))
             .text("systemId", u.system_id.to_string())
-            .text("apiKey", u.api_key);
+            .text("apiKey", u.api_key)
+            // Also in the metadata, but a conventional node answers NO-TG-SENT without it: there it's the
+            // channel's slot on Broadcastify (1, 2, …), the channel's TG Number in the recorder.
+            .text("tg", u.call.call.talkgroup.to_string());
         if let Some(a) = u.alias {
             form = form.text("srcId_alias", a);
         }
