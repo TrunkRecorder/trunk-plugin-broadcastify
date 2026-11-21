@@ -21,6 +21,8 @@ what Trunk Recorder's built-in Broadcastify uploader does.
 | **Send talker aliases** | When the first radio on a call sent its name over the air, send that too. On by default. |
 | **Skip certificate checks** | Upload even when Broadcastify's certificate has expired. Leave it off unless uploads fail with a certificate error. |
 
+A system can set each of these again for itself (its *shared settings* on its card in Setup).
+
 For each system:
 
 | Setting | |
