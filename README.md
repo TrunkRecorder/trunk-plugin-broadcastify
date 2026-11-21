@@ -32,7 +32,12 @@ For each system:
 | **Talkgroups** | **Every talkgroup**, **Only some** or **All but some**. |
 | **Only these** | With **Only some**: upload these talkgroups and no others. |
 | **Except these** | With **Only some** or **All but some**: never upload these. |
-| **Sites of their own** | A site of the system that Broadcastify Calls knows as a system of its own: its name (as under Sites in Setup), its system ID, and its API key if not the system's. Its calls go there; the system's other sites' go to the system's. |
+| **Sites of their own** | A site of the system that Broadcastify Calls knows as a system of its own: its name (as under Sites in Setup), its system ID, and its API key if not the system's. Every call it heard goes there, whichever site's copy was kept; a call two of them heard goes to both. A call none of them heard goes to the system's. |
+| **Only sites of their own** | Upload only the calls a site of its own heard: those only the system's other sites heard (ones recorded for their better copies, say) aren't uploaded. |
+
+On a conventional node, Broadcastify knows each channel by its slot (1, 2, …
+in the order of the node's frequencies): set each channel's **TG Number** in the
+recorder to its slot.
 
 Talkgroups can be numbers, ranges or patterns: `1000-1099` is every talkgroup
 from 1000 to 1099, `*` stands for any digits and `?` for one, so `507*` is

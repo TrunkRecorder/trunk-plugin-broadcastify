@@ -65,8 +65,12 @@ struct SystemConfig {
     talkgroups: Talkgroups,
     /// Sites of their own
     ///
-    /// A site of this system that Broadcastify Calls knows as a system of its own: its calls go there instead.
+    /// A site of this system that Broadcastify Calls knows as a system of its own: the calls it heard go there instead.
     sites: Vec<SiteConfig>,
+    /// Only sites of their own
+    ///
+    /// Upload only the calls a site above heard. Calls only the system's other sites heard aren't uploaded.
+    sites_only: bool,
 }
 
 /// A site with a Broadcastify Calls system of its own.
@@ -99,14 +103,44 @@ struct Target {
     api_key: String,
     /// Sites with a Broadcastify Calls system of their own: (system ID, API key), by site name.
     sites: HashMap<String, (u32, String)>,
+    /// Only calls those sites heard go (none goes to the system's).
+    sites_only: bool,
     filter: TalkgroupFilter,
 }
 
+/// One Broadcastify Calls system a call goes to: its ID, its key, and the site of the system it's for (None: the whole system).
+type Node<'a> = (u32, &'a str, Option<&'a str>);
+
 impl Target {
-    /// Where a call heard on `site` goes: its own system, else the system's.
-    fn of(&self, site: &str) -> (u32, &str) {
-        self.sites.get(site).map_or((self.system_id, self.api_key.as_str()), |(id, key)| (*id, key.as_str()))
+    /// Where a call heard on `heard` (its sites, the kept copy's first) goes: the
+    /// system of each of them with one of its own; none has: the system's,
+    /// unless only sites of their own upload (none).
+    fn nodes<'a>(&'a self, heard: &'a [String]) -> Vec<Node<'a>> {
+        let own: Vec<Node> =
+            heard.iter().filter_map(|s| self.sites.get_key_value(s.as_str())).map(|(s, (id, key))| (*id, key.as_str(), Some(s.as_str()))).collect();
+        match own.is_empty() && !self.sites_only {
+            true => vec![(self.system_id, self.api_key.as_str(), None)],
+            false => own,
+        }
     }
+}
+
+/// The sites a call was heard on, the kept copy's first (a recorder before
+/// `sites`: the kept copy's alone).
+fn heard_on(call: &ConcludedCall) -> Vec<String> {
+    if call.call.sites.is_empty() { vec![call.call.site.clone()].into_iter().filter(|s| !s.is_empty()).collect() } else { call.call.sites.clone() }
+}
+
+/// One call's attempts, one for each system it went to, as one: try again if
+/// any should be, else failed if any was refused, else done if any took it.
+fn together(attempts: Vec<Attempt>) -> Attempt {
+    let rank = |a: &Attempt| match a {
+        Attempt::Retry(_) => 3,
+        Attempt::Fail(_) => 2,
+        Attempt::Done { .. } => 1,
+        Attempt::Skip(_) => 0,
+    };
+    attempts.into_iter().max_by_key(rank).unwrap_or(Attempt::Skip("nowhere to send it".into()))
 }
 
 struct Broadcastify {
@@ -181,7 +215,16 @@ impl Plugin for Broadcastify {
                 host.info(format!("uploading {}'s site {site} as system {id} (key …{})", s.short_name, last2(&key)));
                 sites.insert(site.to_string(), (id, key));
             }
-            targets.insert(s.short_name.clone(), Target { lane, uploader, aliases: s.settings.talker_aliases, system_id, api_key, sites, filter });
+            if c.sites_only {
+                if sites.is_empty() {
+                    return Err(format!("Add a site of {} with a Broadcastify system of its own, or turn off Only sites of their own.", s.short_name));
+                }
+                host.info(format!("{}: only the calls those sites heard", s.short_name));
+            }
+            targets.insert(
+                s.short_name.clone(),
+                Target { lane, uploader, aliases: s.settings.talker_aliases, system_id, api_key, sites, sites_only: c.sites_only, filter },
+            );
         }
         if targets.is_empty() {
             return Err("Add your Broadcastify API key and system ID to the systems you want to upload.".into());
@@ -210,23 +253,27 @@ impl Plugin for Broadcastify {
                 return Attempt::Fail("this call couldn't be encoded as M4A".into());
             };
             let alias = if t.aliases { call.call.src_list.first().map(|s| s.tag_ota.trim()).filter(|a| !a.is_empty()) } else { None };
-            let (system_id, api_key) = t.of(&call.call.site);
-            match t.uploader.upload(&Upload { system_id, api_key, alias, call, audio: m4a }) {
-                Ok(a) => a,
-                // Trying again won't help (Trunk Recorder would): the call fails now, and the plugin's status says what to fix.
-                Err(r) => {
-                    // A site of its own is named so ("dcfd's site south").
-                    let who = match t.sites.contains_key(&call.call.site) {
-                        true => format!("{}'s site {}", call.call.short_name, call.call.site),
-                        false => call.call.short_name.clone(),
-                    };
-                    let m = r.message(&who, system_id);
-                    if refused.lock().unwrap().insert(who) {
-                        status.status(State::Error, &m);
-                    }
-                    Attempt::Fail(m)
-                }
+            let heard = heard_on(call);
+            let nodes = t.nodes(&heard);
+            if nodes.is_empty() {
+                return Attempt::Skip("not heard on a site with a Broadcastify system of its own".into());
             }
+            // (Tried again, a system that already has it says so, and it's skipped there.)
+            let attempts =
+                nodes.into_iter().map(|(system_id, api_key, site)| match t.uploader.upload(&Upload { system_id, api_key, alias, call, audio: m4a }) {
+                    Ok(a) => a,
+                    // Trying again won't help (Trunk Recorder would): the call fails now, and the plugin's status says what to fix.
+                    Err(r) => {
+                        // A site of its own is named so ("dcfd's site south").
+                        let who = site.map_or_else(|| call.call.short_name.clone(), |s| format!("{}'s site {s}", call.call.short_name));
+                        let m = r.message(&who, system_id);
+                        if refused.lock().unwrap().insert(who) {
+                            status.status(State::Error, &m);
+                        }
+                        Attempt::Fail(m)
+                    }
+                });
+            together(attempts.collect())
         });
         Ok(Broadcastify { queue })
     }
@@ -298,6 +345,7 @@ mod tests {
         assert_eq!(out.results(), vec![(call.path.clone(), Outcome::Ok, String::new(), String::new())]);
         let r = server.requests();
         assert_eq!((r[0].method.as_str(), r[0].path.as_str()), ("POST", "/call-upload"));
+        assert_eq!(r[0].form_field("tg").as_deref(), Some(&b"101"[..]), "the talkgroup as a field too (a conventional node needs it)");
         let field = |n: &str| String::from_utf8(r[0].form_field(n).unwrap()).unwrap();
         assert_eq!(field("systemId"), "42");
         assert_eq!(field("apiKey"), "good");
@@ -464,7 +512,7 @@ mod tests {
         let s = m.system_config.unwrap();
         assert_eq!(s["properties"]["talkgroupMode"]["enum"], json!(["all", "only", "allBut"]));
         assert_eq!(s["properties"]["talkgroupAllow"]["x-when"], json!({ "talkgroupMode": "only" }));
-        assert_eq!(s["x-order"], json!(["apiKey", "systemId", "talkgroupMode", "talkgroupAllow", "talkgroupDeny", "sites"]));
+        assert_eq!(s["x-order"], json!(["apiKey", "systemId", "talkgroupMode", "talkgroupAllow", "talkgroupDeny", "sites", "sitesOnly"]));
         assert_eq!(s["properties"]["systemId"]["type"], "integer");
         let c = m.config.unwrap();
         assert_eq!(c["properties"]["talkerAliases"]["default"], true);
@@ -491,6 +539,29 @@ mod tests {
         };
         assert_eq!(sent("systemId"), ["42", "77"]);
         assert_eq!(sent("apiKey"), ["good", "good"], "the system's key, the site having none of its own");
+        // Kept from north, but south heard it too: south's (issue 7).
+        let run = |config: Value, sites: &[&str]| {
+            let server = broadcastify();
+            let mut h = testing::hello(&dir, json!({ "server": format!("{}/call-upload", server.url()) }));
+            h.systems[0].config = config;
+            let mut call = testing::call(&dir, "sys1", 103);
+            call.call.site = sites[0].into();
+            call.call.sites = sites.iter().map(|s| s.to_string()).collect();
+            let out = testing::run::<Broadcastify>([HostMessage::Hello(h), HostMessage::CallConcluded(call)]);
+            let ids: Vec<String> = server.requests().iter().filter_map(|r| r.form_field("systemId")).map(|v| String::from_utf8(v).unwrap()).collect();
+            (ids, out.results().into_iter().map(|r| r.1).collect::<Vec<_>>())
+        };
+        let own = json!({ "apiKey": "good", "systemId": 42, "sites": [{ "site": "south", "systemId": 77 }, { "site": "east", "systemId": 88 }] });
+        assert_eq!(run(own.clone(), &["north", "south"]).0, ["77"]);
+        assert_eq!(run(own.clone(), &["north"]).0, ["42"], "no site of its own heard it: the system's");
+        let mut both = run(own.clone(), &["south", "east"]).0;
+        both.sort();
+        assert_eq!(both, ["77", "88"], "each site of its own that heard it");
+        // Only sites of their own: a call none of them heard isn't uploaded.
+        let mut only = own.clone();
+        only["sitesOnly"] = json!(true);
+        assert_eq!(run(only.clone(), &["north"]), (vec![], vec![Outcome::Skipped]));
+        assert_eq!(run(only, &["north", "south"]).0, ["77"]);
         // A site of its own needs its name and system ID.
         let mut h = testing::hello(&dir, json!({}));
         h.systems[0].config = json!({ "apiKey": "good", "systemId": 42, "sites": [{ "site": "south" }] });
