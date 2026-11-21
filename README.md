@@ -32,7 +32,13 @@ For each system:
 | **Talkgroups** | **Every talkgroup**, **Only some** or **All but some**. |
 | **Only these** | With **Only some**: upload these talkgroups and no others. |
 | **Except these** | With **Only some** or **All but some**: never upload these. |
-| **Sites of their own** | A site of the system that Broadcastify Calls knows as a system of its own: its name (as under Sites in Setup), its system ID, and its API key if not the system's. Its calls go there; the system's other sites' go to the system's. |
+
+A system with several sites has a row for each of them on its card in Setup. A site that's a system
+of its own on Broadcastify Calls gets its **System ID** (and **API key**, if not the system's) there:
+every call it heard goes to it, whichever site's copy was kept, and a call two such sites heard goes
+to both. A call only the system's other sites heard goes to the system's. With no API key for the
+whole system, only the calls a site of its own heard are uploaded. **Sites** on the card turns the
+plugin off for a site: a call only it heard isn't uploaded.
 
 Talkgroups can be numbers, ranges or patterns: `1000-1099` is every talkgroup
 from 1000 to 1099, `*` stands for any digits and `?` for one, so `507*` is
@@ -85,7 +91,7 @@ are the plugin's settings, and each system's `broadcastifyApiKey` and
 `broadcastifySystemId` are its settings for that system. Its talkgroup lists
 are set with the **Talkgroups** menu.
 Trunk Recorder systems that are sites of one system (`multiSite`) are one
-system here: give each site's system ID under **Sites of their own**.
+system here: give each site its system ID in its row on the system's card.
 
 ## Building
 
