@@ -302,8 +302,10 @@ mod tests {
         assert_eq!(out.results(), vec![(call.path.clone(), Outcome::Ok, String::new(), String::new())]);
         let r = server.requests();
         assert_eq!((r[0].method.as_str(), r[0].path.as_str()), ("POST", "/call-upload"));
-        assert_eq!(r[0].form_field("tg").as_deref(), Some(&b"101"[..]), "the talkgroup as a field too (a conventional node needs it)");
         let field = |n: &str| String::from_utf8(r[0].form_field(n).unwrap()).unwrap();
+        // And the form-field style's fields, for a node set up for another recorder.
+        assert_eq!((field("tg"), field("freq"), field("src")), ("101".into(), "851.0125".into(), "1234".into()));
+        assert!(field("ts").parse::<i64>().unwrap() > 1_700_000_000);
         assert_eq!(field("systemId"), "42");
         assert_eq!(field("apiKey"), "good");
         assert_eq!(field("callDuration"), "3.000000");
