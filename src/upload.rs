@@ -49,10 +49,10 @@ impl Uploader {
             .file("metadata", "call_meta.json", "application/json", meta.to_string().as_bytes())
             .text("callDuration", format!("{:.6}", length_ms as f64 / 1000.0))
             .text("systemId", u.system_id.to_string())
-            .text("apiKey", u.api_key)
-            // Also in the metadata, but a conventional node answers NO-TG-SENT without it: there it's the
-            // channel's slot on Broadcastify (1, 2, …), the channel's TG Number in the recorder.
-            .text("tg", u.call.call.talkgroup.to_string());
+            .text("apiKey", u.api_key);
+        for (name, value) in fields(&meta) {
+            form = form.text(name, value);
+        }
         if let Some(a) = u.alias {
             form = form.text("srcId_alias", a);
         }
@@ -63,7 +63,7 @@ impl Uploader {
         };
         let status = resp.status().as_u16();
         let text = resp.body_mut().read_to_string().unwrap_or_default();
-        if let Some(what) = refused(status, &text) {
+        if let Some(what) = refused(&text) {
             return Err(Refusal { what, answer: text.trim().chars().take(200).collect() });
         }
         let audio_url = match answer(status, &text) {
@@ -113,18 +113,19 @@ impl Refusal {
 /// mistyped key looks like Broadcastify being down; here the call fails at
 /// once, and the plugin says what to fix.
 ///
-/// Broadcastify documents `100 NO-API-KEY-SPECIFIED` ("do not retry without
-/// correcting"); it answers a wrong key with `1 Invalid-API-Key`. Other
-/// refusals are told apart by what they name.
-fn refused(status: u16, text: &str) -> Option<Refused> {
-    let text = text.trim();
-    let (code, message) = text.split_once(' ').unwrap_or((text, ""));
-    if status != 200 || code == "0" || message.starts_with("SKIPPED") || message.starts_with("REJECTED") {
+/// Broadcastify's answers are `<code> <what>`, with any HTTP status (`1 No
+/// API Key Specified` comes with 403); a wrong key is `1 Invalid-API-Key`.
+fn refused(text: &str) -> Option<Refused> {
+    let (code, message) = coded(text)?;
+    if code == 0 || message.starts_with("SKIPPED") || message.starts_with("REJECTED") {
         return None;
     }
-    let m = message.to_ascii_uppercase().replace(['_', ' '], "-");
-    if code == "100" || m.contains("API-KEY") || m.contains("APIKEY") {
+    let m = loud(message);
+    if code == 100 || m.contains("API-KEY") || m.contains("APIKEY") {
         Some(Refused::ApiKey)
+    } else if ["UPLOADS-NOT-ENABLED", "UNSUPPORTED-NODE-TYPE"].iter().any(|w| m.contains(w)) {
+        // The node is turned off, or set up for a recorder it can't take calls from: support's to fix.
+        Some(Refused::NotAllowed)
     } else if m.contains("SYSTEM") && ["INVALID", "UNKNOWN", "NO-", "BAD"].iter().any(|w| m.contains(w)) {
         Some(Refused::SystemId)
     } else if ["NOT-AUTHORIZED", "UNAUTHORIZED", "NOT-ALLOWED", "DENIED", "FORBIDDEN"].iter().any(|w| m.contains(w)) {
@@ -134,9 +135,34 @@ fn refused(status: u16, text: &str) -> Option<Refused> {
     }
 }
 
+/// An answer's code and what it says, when it's in Broadcastify's `<code> <what>` form.
+fn coded(text: &str) -> Option<(u32, &str)> {
+    let text = text.trim();
+    let (code, message) = text.split_once(' ').unwrap_or((text, ""));
+    Some((code.parse().ok()?, message.trim()))
+}
+
+/// Upper case, `-` between words, as most of Broadcastify's answers are written.
+fn loud(message: &str) -> String {
+    message.to_ascii_uppercase().replace(['_', ' '], "-")
+}
+
 /// What the answer to the details means: where to send the audio, or what became of the call.
 fn answer(status: u16, text: &str) -> Result<String, Attempt> {
     let text = text.trim();
+    if let Some((code, message)) = coded(text) {
+        let m = loud(message);
+        let said = || format!("Broadcastify: {message}");
+        match code {
+            0 if message.starts_with("http") => return Ok(message.to_string()),
+            // Already taken (from this node or another hearing the system), or a unit-to-unit call, which it doesn't take.
+            1 if m.starts_with("SKIPPED") || m.starts_with("SKIP-UNIT-TO-UNIT") => return Err(Attempt::Skip(said())),
+            1 if m.starts_with("REJECTED") => return Err(Attempt::Fail(said())),
+            // Something the request lacks, or a slot the node doesn't have: sending it again won't help.
+            1 if FIX_THE_REQUEST.iter().any(|w| m.contains(w)) => return Err(Attempt::Fail(said())),
+            _ => {}
+        }
+    }
     if status != 200 {
         let what: String = text.lines().next().unwrap_or("").chars().take(200).collect();
         let why = if what.is_empty() { format!("HTTP {status}") } else { format!("HTTP {status}: {what}") };
@@ -146,15 +172,46 @@ fn answer(status: u16, text: &str) -> Result<String, Attempt> {
             _ => Attempt::Retry(why),
         });
     }
-    let (code, message) = text.split_once(' ').unwrap_or((text, ""));
-    match code {
-        "0" if message.starts_with("http") => Ok(message.trim().to_string()),
-        "1" if message.starts_with("SKIPPED") => Err(Attempt::Skip(format!("Broadcastify: {message}"))),
-        "1" if message.starts_with("REJECTED") => Err(Attempt::Fail(format!("Broadcastify: {message}"))),
-        // (Trunk Recorder tries anything else again; so does this, but for
-        // the refusals `refused` picks out first.)
-        _ => Err(Attempt::Retry(format!("Broadcastify: {}", if text.is_empty() { "an empty answer" } else { text }))),
+    // (Trunk Recorder tries anything else again; so does this, but for
+    // the refusals `refused` picks out first.)
+    Err(Attempt::Retry(format!("Broadcastify: {}", if text.is_empty() { "an empty answer" } else { text })))
+}
+
+/// The answers that say the request was wrong ("Fix the request" in Broadcastify's spec), as [`loud`] writes them.
+const FIX_THE_REQUEST: &[&str] = &[
+    "NO-TG-SENT",
+    "NO-FREQ-SENT",
+    "NO-TIMESTAMP-SENT",
+    "NO-CALL-DURATION-SENT",
+    "SLOT-ENTRY-ERROR",
+    "TABLE-ENTRY-FOR-UPLOAD",
+    "METADATA",
+    "CALL-DURATION-MUST-BE-SPECIFIED",
+    "INVALID-ENCODE-TYPE",
+    "NOTHING-SENT",
+];
+
+/// The call as the form-field style's fields: `tg`, `freq`, `ts` and `src`
+/// (`callDuration` goes with every upload), from the call JSON that's sent.
+///
+/// Broadcastify reads a node's calls in the style it set the node up for,
+/// from the recorder it was approved with: the call JSON (`metadata`) for
+/// Trunk Recorder, these fields for others (SDRTrunk, Trunking Recorder).
+/// A node set up for another recorder answers NO-TG-SENT, NO-FREQ-SENT, …
+/// without them, so both are sent: a node reads its own style's.
+/// (Broadcastify's spec: <https://github.com/blantonl/bcfy-calls-upload>.)
+fn fields(meta: &Value) -> Vec<(&'static str, String)> {
+    let num = |k: &str| meta[k].as_u64().unwrap_or(0);
+    // A patch's talkgroups, its own first (Broadcastify files it under the first unless the system says otherwise).
+    let talkgroup = num("talkgroup");
+    let patched = meta["patched_talkgroups"].as_array().into_iter().flatten().filter_map(Value::as_u64).filter(|&t| t != talkgroup);
+    let tg: Vec<String> = std::iter::once(talkgroup).chain(patched).map(|t| t.to_string()).collect();
+    let mut f = vec![("tg", tg.join(",")), ("freq", format!("{}", num("freq") as f64 / 1e6)), ("ts", meta["start_time"].as_i64().unwrap_or(0).to_string())];
+    let src = meta["srcList"].as_array().into_iter().flatten().filter_map(|s| s["src"].as_i64()).find(|&s| s > 0);
+    if let Some(s) = src {
+        f.push(("src", s.to_string()));
     }
+    f
 }
 
 /// The call JSON to send, and the call's length in ms.
@@ -200,22 +257,68 @@ mod tests {
         assert!(matches!(answer(200, "1 Database busy"), Err(Attempt::Retry(_))));
         assert!(matches!(answer(502, "Bad gateway"), Err(Attempt::Retry(_))));
         assert!(matches!(answer(403, "Forbidden"), Err(Attempt::Fail(_))));
+        // The answers of Broadcastify's spec that aren't the node's settings.
+        assert!(matches!(answer(200, "1 SKIPPED---ALREADY-RECEIVED-THIS-CALL"), Err(Attempt::Skip(_))));
+        assert!(matches!(answer(200, "1 Skip-Unit-To-Unit-CT4"), Err(Attempt::Skip(_))));
+        assert!(matches!(answer(200, "1 REJECTED-CALL-SKEW-TOO-LONG-22-See:https://www.broadcastify.com/skew"), Err(Attempt::Fail(_))));
+        for text in [
+            "1 NO-TG-SENT",
+            "1 NO-FREQ-SENT",
+            "1 NO-TIMESTAMP-SENT",
+            "1 NO-CALL-DURATION-SENT",
+            "1 SLOT_ENTRY_ERROR",
+            "1 No-Tg-Table-Entry-For-Upload",
+            "1 INVALID-ENCODE-TYPE",
+            "1 Nothing-Sent",
+        ] {
+            assert!(matches!(answer(200, text), Err(Attempt::Fail(_))), "{text}");
+        }
+        assert!(matches!(answer(500, "1 TRUNK-RECORDER-METADATA-ERROR"), Err(Attempt::Fail(_))), "with any status");
+        assert!(matches!(answer(500, "1 ERROR: Call Duration Must be Specified for Conventional Calls"), Err(Attempt::Fail(_))));
+        assert!(matches!(answer(200, "1 Uploads-disabled-systemwide"), Err(Attempt::Retry(_))));
     }
 
     #[test]
     fn refusals_of_the_settings() {
-        assert_eq!(refused(200, "1 Invalid-API-Key\n"), Some(Refused::ApiKey));
-        assert_eq!(refused(200, "100 NO-API-KEY-SPECIFIED"), Some(Refused::ApiKey));
-        assert_eq!(refused(200, "1 Invalid-System-ID"), Some(Refused::SystemId));
-        assert_eq!(refused(200, "1 API Key not authorized for system"), Some(Refused::ApiKey));
-        assert_eq!(refused(200, "1 Not-Authorized"), Some(Refused::NotAllowed));
+        assert_eq!(refused("1 Invalid-API-Key\n"), Some(Refused::ApiKey));
+        assert_eq!(refused("100 NO-API-KEY-SPECIFIED"), Some(Refused::ApiKey));
+        assert_eq!(refused("1 Invalid-System-ID"), Some(Refused::SystemId));
+        assert_eq!(refused("1 API Key not authorized for system"), Some(Refused::ApiKey));
+        assert_eq!(refused("1 Not-Authorized"), Some(Refused::NotAllowed));
         // Not refusals: success, the answers Trunk Recorder knows, anything else, and HTTP errors.
         for text in ["0 https://s3.example/x", "1 SKIPPED---ALREADY-RECEIVED-THIS-CALL", "1 REJECTED: no such system", "1 Database busy", ""] {
-            assert_eq!(refused(200, text), None, "{text}");
+            assert_eq!(refused(text), None, "{text}");
         }
-        assert_eq!(refused(502, "Invalid-API-Key"), None);
+        assert_eq!(refused("Invalid-API-Key"), None, "not in Broadcastify's form");
+        // Whatever the HTTP status, and the node turned off or set up for another recorder.
+        assert_eq!(refused("1 No API Key Specified"), Some(Refused::ApiKey));
+        assert_eq!(refused("1 API-Key-Not-Authorized-For-System"), Some(Refused::ApiKey));
+        assert_eq!(refused("1 NO-SYSTEM-ID-SPECIFIED"), Some(Refused::SystemId));
+        assert_eq!(refused("1 Uploads-not-enabled-for-this-system"), Some(Refused::NotAllowed));
+        assert_eq!(refused("1 Unsupported-Node-Type-Encoder-3-CallType-2"), Some(Refused::NotAllowed));
+        for text in ["1 NO-FREQ-SENT", "1 Uploads-disabled-systemwide", "1 No-Freq-Table-Entry-For-Upload", "1 Skip-Unit-To-Unit-CT3"] {
+            assert_eq!(refused(text), None, "{text}");
+        }
         let r = Refusal { what: Refused::ApiKey, answer: "1 Invalid-API-Key".into() };
         assert_eq!(r.message("dcfd", 42), "Broadcastify refused the API key for dcfd — check the system's API key (Broadcastify said \"1 Invalid-API-Key\")");
+    }
+
+    #[test]
+    fn form_fields() {
+        let mut c = ConcludedCall::default();
+        c.call.freq = 851_162_500;
+        c.call.talkgroup = 1201;
+        c.call.call_length_ms = 6120;
+        c.call.src_list = vec![Default::default(), Default::default()];
+        c.call.src_list[1].src = 4801123;
+        let (meta, _) = metadata(&c, Some(1_794_590_106));
+        let f = |meta: &Value| fields(meta).into_iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join(" ");
+        // As in Broadcastify's examples: MHz, the start that's sent in the metadata, the first radio known.
+        assert_eq!(f(&meta), "tg=1201 freq=851.1625 ts=1794590099 src=4801123");
+        // A patch: its own talkgroup first.
+        c.call.patched_talkgroups = vec![1305, 1201];
+        c.call.src_list.clear();
+        assert_eq!(f(&metadata(&c, Some(1_794_590_106)).0), "tg=1201,1305 freq=851.1625 ts=1794590099");
     }
 
     #[test]

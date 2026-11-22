@@ -40,9 +40,9 @@ to both. A call only the system's other sites heard goes to the system's. With n
 whole system, only the calls a site of its own heard are uploaded. **Sites** on the card turns the
 plugin off for a site: a call only it heard isn't uploaded.
 
-On a conventional node, Broadcastify knows each channel by its slot (1, 2, …
-in the order of the node's frequencies): set each channel's **TG Number** in the
-recorder to its slot.
+On a conventional node, Broadcastify knows each channel by its slot, listed on
+the node's page at [broadcastify.com/calls/manage](https://www.broadcastify.com/calls/manage/):
+set each channel's **TG Number** in the recorder to its slot.
 
 Talkgroups can be numbers, ranges or patterns: `1000-1099` is every talkgroup
 from 1000 to 1099, `*` stands for any digits and `?` for one, so `507*` is
@@ -55,7 +55,10 @@ apply (the log says so); choose the menu once to see them on the card.
 
 For each recorded call of a system with an API key, it sends Broadcastify the
 call's details (its call JSON: talkgroup, frequency, times, the radios heard)
-and then its M4A audio. Encrypted calls are never sent.
+and then its M4A audio. Encrypted calls are never sent. The details also go
+as separate fields (`tg`, `freq`, `ts`, `src`), so a node Broadcastify set up
+for another recorder, such as one shared with SDRTrunk or Trunking Recorder,
+takes the calls too.
 
 Broadcastify judges how far behind a node is from the end time of each call.
 A call ends a few seconds after its last transmission, so (as Trunk Recorder
