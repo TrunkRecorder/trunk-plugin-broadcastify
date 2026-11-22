@@ -11,8 +11,8 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use serde_json::json;
-use trunk_recorder_plugin::Health;
 use trunk_recorder_plugin::Host;
+use trunk_recorder_plugin::Totals;
 use trunk_recorder_plugin::health::{Answer, Failure, History, Recorder, Report, Reporter, Select};
 
 /// One node: a system ID and its key, and the part of the recorder it is.
@@ -65,7 +65,7 @@ fn send(agent: &ureq::Agent, url: &str, report: &Report) -> Sent {
 
 /// The reporting thread: give it the recorder's totals as they come.
 pub struct Reports {
-    tx: Option<Sender<Health>>,
+    tx: Option<Sender<Totals>>,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -76,7 +76,7 @@ impl Reports {
         Reports { tx: Some(tx), thread }
     }
 
-    pub fn push(&self, h: Health) {
+    pub fn push(&self, h: Totals) {
         if let Some(tx) = &self.tx {
             let _ = tx.send(h);
         }
@@ -90,7 +90,7 @@ impl Reports {
     }
 }
 
-fn run(host: Host, url: String, skip: bool, recorder: Recorder, nodes: Vec<Node>, rx: Receiver<Health>) {
+fn run(host: Host, url: String, skip: bool, recorder: Recorder, nodes: Vec<Node>, rx: Receiver<Totals>) {
     let tls = ureq::tls::TlsConfig::builder().disable_verification(skip).build();
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .timeout_global(Some(Duration::from_secs(20)))

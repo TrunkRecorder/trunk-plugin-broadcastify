@@ -6,8 +6,12 @@
   Broadcastify how well this recorder hears it: control channel time decoding, messages decoded and
   lost, calls announced and why any weren't recorded, voice frames lost, radios' dropped samples and
   clipping. Broadcastify can then prefer the node hearing a system best, and tell a quiet node from
-  a down one. On by default (**Send health reports**); they need Trunk Recorder Pro 0.3.8 or later,
-  and stop for the run, said once, while Broadcastify doesn't take them. **Health report server**
+  a down one. On by default (**Send health reports**); they need Trunk Recorder Pro 0.3.9 or later,
+  and stop for the run, said once, while Broadcastify doesn't take them. A site that's a
+  Broadcastify system of its own (its **Sites** settings) is reported to its own ID. Built with
+  trunk-recorder-plugin 0.14.0 (its `health` module and the `totals` topic). Since the plugin now
+  takes every system's figures, Trunk Recorder Pro doesn't offer to turn it off for a system or
+  site: one without an API key and system ID is neither uploaded nor reported. **Health report server**
   sends them elsewhere. Turning them off leaves uploads as they are, but Broadcastify then can't
   compare the node with others (it may get a lower priority or be left out) or tell you about
   problems with it: see the README's [Health reports](README.md#health-reports).

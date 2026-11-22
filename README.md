@@ -23,6 +23,8 @@ what Trunk Recorder's built-in Broadcastify uploader does.
 | **Send health reports** | Every 5 minutes, tell Broadcastify how well this recorder hears each system it uploads (see [Health reports](#health-reports)). On by default. Leave it on: without them Broadcastify can't compare your node with others, so it may get a lower priority or be left out, and can't tell you about problems with it (see [Turning them off](#turning-them-off)). |
 | **Health report server** | Leave it empty: reports go beside the upload server (`…/call-health`). |
 
+A system can set each of these again for itself (its *shared settings* on its card in Setup).
+
 For each system:
 
 | Setting | |
@@ -32,7 +34,17 @@ For each system:
 | **Talkgroups** | **Every talkgroup**, **Only some** or **All but some**. |
 | **Only these** | With **Only some**: upload these talkgroups and no others. |
 | **Except these** | With **Only some** or **All but some**: never upload these. |
-| **Sites of their own** | A site of the system that Broadcastify Calls knows as a system of its own: its name (as under Sites in Setup), its system ID, and its API key if not the system's. Its calls go there; the system's other sites' go to the system's. |
+
+A system with several sites has a row for each of them on its card in Setup. A site that's a system
+of its own on Broadcastify Calls gets its **System ID** (and **API key**, if not the system's) there:
+every call it heard goes to it, whichever site's copy was kept, and a call two such sites heard goes
+to both. A call only the system's other sites heard goes to the system's. With no API key for the
+whole system, only the calls a site of its own heard are uploaded. **Sites** on the card turns the
+plugin off for a site: a call only it heard isn't uploaded.
+
+On a conventional node, Broadcastify knows each channel by its slot (1, 2, …
+in the order of the node's frequencies): set each channel's **TG Number** in the
+recorder to its slot.
 
 Talkgroups can be numbers, ranges or patterns: `1000-1099` is every talkgroup
 from 1000 to 1099, `*` stands for any digits and `?` for one, so `507*` is
@@ -79,8 +91,13 @@ calls from the one hearing it best, and can tell a node that's up but has no
 calls from one that's down.
 A site with a system ID of its own is reported to that ID alone.
 
-Reports need Trunk Recorder Pro 0.3.8 or later (an older one doesn't send the
-plugin what goes in them) and go on a thread of their own, so uploads never
+Since the reports are made of every system's figures (the recorder's `totals`),
+the plugin is on for every system and site: Trunk Recorder Pro doesn't offer to
+turn it off for one. A system or site with no API key and system ID is neither
+uploaded nor reported.
+
+Reports need Trunk Recorder Pro 0.3.9 or later (an older one doesn't send the
+plugin the `totals` they're made of) and go on a thread of their own, so uploads never
 wait on them. A report that fails is carried by the next. Until Broadcastify
 takes them (an answer that isn't a report's), the plugin says so once and
 stops sending them until recording starts again.
@@ -138,7 +155,7 @@ are the plugin's settings, and each system's `broadcastifyApiKey` and
 `broadcastifySystemId` are its settings for that system. Its talkgroup lists
 are set with the **Talkgroups** menu.
 Trunk Recorder systems that are sites of one system (`multiSite`) are one
-system here: give each site's system ID under **Sites of their own**.
+system here: give each site its system ID in its row on the system's card.
 
 ## Building
 
