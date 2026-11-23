@@ -94,18 +94,6 @@ fn node(c: &SystemConfig) -> Option<(u32, &str)> {
     c.system_id.filter(|&id| id != 0 && !key.is_empty()).map(|id| (id, key))
 }
 
-/// One call's attempts, one for each Broadcastify system it went to, as one:
-/// try again if any should be, else failed if any was refused, else done if any took it.
-fn together(attempts: Vec<Attempt>) -> Attempt {
-    let rank = |a: &Attempt| match a {
-        Attempt::Retry(_) => 3,
-        Attempt::Fail(_) => 2,
-        Attempt::Done { .. } => 1,
-        Attempt::Skip(_) => 0,
-    };
-    attempts.into_iter().max_by_key(rank).unwrap_or(Attempt::Skip("nowhere to send it".into()))
-}
-
 struct Broadcastify {
     queue: CallQueue,
     /// Health reports, one thread for each server they go to.
@@ -226,6 +214,10 @@ impl Plugin for Broadcastify {
             if call.call.encrypted {
                 return Attempt::Skip("encrypted".into());
             }
+            // Kept with none by "Keep calls with no audio": nothing to play.
+            if !call.call.has_audio() {
+                return Attempt::Skip("no audio".into());
+            }
             if !t.filter.passes(call.call.talkgroup) {
                 return Attempt::Skip(format!("talkgroup {} isn't uploaded (talkgroup filter)", call.call.talkgroup));
             }
@@ -258,10 +250,9 @@ impl Plugin for Broadcastify {
                         Attempt::Fail(m)
                     }
                 });
-            together(attempts.collect())
+            Attempt::together(attempts)
         });
-        let name = if setup.host.name == "trunk-pro" { "trunk-recorder-pro".to_string() } else { setup.host.name.clone() };
-        let recorder = Recorder::new(name, setup.host.version.clone());
+        let recorder = Recorder::of(&setup.host);
         let reports =
             health_nodes.into_iter().map(|((url, skip), nodes)| health::Reports::start(status_host.clone(), url, skip, recorder.clone(), nodes)).collect();
         Ok(Broadcastify { queue, reports })
@@ -486,6 +477,21 @@ mod tests {
         let out = testing::run::<Broadcastify>([hello(&dir, server.url(), json!({ "apiKey": "good", "systemId": 42 })), HostMessage::CallConcluded(call)]);
         assert_eq!(out.results()[0].1, Outcome::Skipped);
         assert!(server.requests().is_empty());
+    }
+
+    /// A call kept with no audio ("Keep calls with no audio"); a 0.4 s one, whose `call_length` says 0, has some.
+    #[test]
+    fn calls_with_no_audio_are_skipped() {
+        let (dir, server) = (testing::temp_dir("bcfy-silent"), broadcastify());
+        let mut silent = testing::call(&dir, "sys1", 101);
+        (silent.call.call_length, silent.call.call_length_ms) = (0.0, 0);
+        let out = testing::run::<Broadcastify>([hello(&dir, server.url(), json!({ "apiKey": "good", "systemId": 42 })), HostMessage::CallConcluded(silent)]);
+        assert_eq!(out.results()[0].1, Outcome::Skipped);
+        assert!(server.requests().is_empty());
+        let mut short = testing::call(&dir, "sys1", 102);
+        (short.call.call_length, short.call.call_length_ms) = (0.0, 400);
+        let out = testing::run::<Broadcastify>([hello(&dir, server.url(), json!({ "apiKey": "good", "systemId": 42 })), HostMessage::CallConcluded(short)]);
+        assert_eq!(out.results()[0].1, Outcome::Ok, "{:?}", out.results());
     }
 
     #[test]
