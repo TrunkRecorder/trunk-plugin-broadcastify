@@ -117,8 +117,9 @@ impl Plugin for Broadcastify {
             name: "Broadcastify Calls".into(),
             subscribe: vec![topic::CALL_CONCLUDED.into()],
             audio_formats: vec![format::M4A.into()],
-            // Each read per system: a system can upload elsewhere, its own way.
-            system_overrides: vec!["server".into(), "talkerAliases".into(), "skipCertificateCheck".into()],
+            // Each read per system: a system can upload elsewhere, its own way. (Not the certificate
+            // check: whether to trust a server is the recorder's decision, made once.)
+            system_overrides: vec!["server".into(), "talkerAliases".into()],
             // A site that's a Broadcastify Calls system of its own.
             site_overrides: vec!["apiKey".into(), "systemId".into()],
             ..trunk_recorder_plugin::manifest!()
@@ -130,7 +131,8 @@ impl Plugin for Broadcastify {
         if !setup.has_format(format::M4A) {
             return Err("Broadcastify needs calls as M4A, and there's no M4A encoder on this computer. Install ffmpeg, then start recording again.".into());
         }
-        // One uploader for each server, and certificate check (a system can override either).
+        // One uploader for each server (a system can override it), and certificate check (the same for all).
+        let skip = setup.config.skip_certificate_check;
         let mut uploaders: HashMap<(String, bool), Arc<Uploader>> = HashMap::new();
         // By short name, and the name of each system id: a call finds its system by id, the same
         // after a rename (one saved by a recorder before ids, by short name).
@@ -155,7 +157,6 @@ impl Plugin for Broadcastify {
             if !(server.starts_with("https://") || server.starts_with("http://")) {
                 return Err(format!("The upload server has to be a web address (https://…), not \"{server}\""));
             }
-            let skip = s.settings.skip_certificate_check;
             if skip {
                 host.warn(format!("not checking the certificate of {server} for {}", s.short_name));
             }
@@ -477,6 +478,7 @@ mod tests {
         assert_eq!(c["properties"]["talkerAliases"]["default"], true);
         // What a system can set again is one of its settings.
         assert!(m.system_overrides.iter().all(|k| c["properties"].get(k).is_some()), "{:?}", m.system_overrides);
+        assert!(!m.system_overrides.contains(&"skipCertificateCheck".to_string()), "the certificate check is one for the recorder");
     }
 
     /// A site with a Broadcastify Calls system of its own (its settings in Setup): the calls it heard go
@@ -510,6 +512,24 @@ mod tests {
         assert_eq!((ids, results), (Vec::<String>::new(), vec![Outcome::Skipped]));
         // A site of its own needs its system ID and key.
         assert!(run(system, json!({ "apiKey": "good" }), &[(8, "south")]).2.contains("site south"));
+    }
+
+    /// Skipping the certificate check is the recorder's setting alone: a system that sets it for
+    /// itself (as an older recorder could save) is still checked.
+    #[test]
+    fn the_certificate_check_is_set_once() {
+        let (dir, server) = (testing::temp_dir("bcfy"), broadcastify());
+        let run = |config: Value, settings: Value| {
+            let mut h = testing::hello(&dir, config);
+            h.systems[0].config = json!({ "apiKey": "good", "systemId": 42 });
+            h.systems[0].settings = settings;
+            format!("{:?}", testing::run::<Broadcastify>([HostMessage::Hello(h)]))
+        };
+        let url = format!("{}/call-upload", server.url());
+        let own = run(json!({ "server": url }), json!({ "server": url, "skipCertificateCheck": true }));
+        assert!(!own.contains("not checking the certificate"), "{own}");
+        let all = run(json!({ "server": url, "skipCertificateCheck": true }), json!({ "server": url, "skipCertificateCheck": true }));
+        assert!(all.contains("not checking the certificate"), "{all}");
     }
 
     /// A system can override the server, and whether talker aliases go.

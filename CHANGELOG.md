@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+- **Skip certificate checks** is set once, for every system: a system or site can't turn it on for itself.
+  One set that way before is ignored.
+
 ## [0.1.8]
 
 - Four uploads at once for each server, up from two. Every system sending to the same server shares
