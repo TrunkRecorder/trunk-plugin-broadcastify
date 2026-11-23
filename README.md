@@ -20,6 +20,8 @@ what Trunk Recorder's built-in Broadcastify uploader does.
 | **Upload server** | Leave it as it is, unless Broadcastify tells you to change it. |
 | **Send talker aliases** | When the first radio on a call sent its name over the air, send that too. On by default. |
 | **Skip certificate checks** | Upload even when Broadcastify's certificate has expired. Leave it off unless uploads fail with a certificate error. |
+| **Send health reports** | Every 5 minutes, tell Broadcastify how well this recorder hears each system it uploads (see [Health reports](#health-reports)). On by default. Leave it on: without them Broadcastify can't compare your node with others, so it may get a lower priority or be left out, and can't tell you about problems with it (see [Turning them off](#turning-them-off)). |
+| **Health report server** | Leave it empty: reports go beside the upload server (`…/call-health`). |
 
 A system can set each of these again for itself (its *shared settings* on its card in Setup).
 
@@ -78,6 +80,63 @@ fail at once instead of waiting on retries, and the plugin's status says what
 to fix, e.g. "Broadcastify refused the API key for dcfd — check the system's
 API key". (Trunk Recorder tries these calls again like any other failure, so a
 mistyped key looks like Broadcastify being down.)
+
+## Health reports
+
+Every 5 minutes, at a random point of its own, each node (a system ID) sends
+Broadcastify a [node health report](https://github.com/TrunkRecorder/trunk-recorder-pro/blob/main/docs/api/node-health.md):
+how many seconds the recorder was decoding the system's control channel, the
+control messages it decoded and lost, the calls the system announced and why
+any weren't recorded (no radio covering the frequency, every recorder busy),
+and the voice frames it lost, along with its radios' dropped samples and
+clipping. When several nodes upload one system, Broadcastify can take its
+calls from the one hearing it best, and can tell a node that's up but has no
+calls from one that's down.
+A site with a system ID of its own is reported to that ID alone.
+
+A system or site the plugin is turned off for in Trunk Recorder Pro is neither
+uploaded nor reported, nor is one with no API key and system ID. (Pro 0.4.1 and
+earlier keep a plugin taking `totals` on for every system and site.)
+
+Reports need Trunk Recorder Pro 0.3.9 or later (an older one doesn't send the
+plugin the `totals` they're made of) and go on a thread of their own, so uploads never
+wait on them. A report that fails is carried by the next. When the server
+doesn't take them (not found, or an answer that isn't a report's), the plugin
+says so once and tries again less and less often, up to once an hour.
+
+### What a report contains
+
+Counts of what the recorder heard, not scores:
+
+- **For each system or site:** the identity its control channel broadcasts (WACN, System ID, RFSS,
+  site, NAC) and the control channel's frequency; the seconds spent decoding it, the messages
+  decoded and lost, its signal-to-noise ratio and phase error; the calls announced, how many were
+  recorded and why any weren't; the voice frames received and lost.
+- **For each conventional channel:** its frequency and the name you gave it, the time it was heard
+  and open, its levels, and its calls.
+- **For each radio (SDR) those use:** the name you gave it, its kind (`airspy`, `hackrf`, ...),
+  seconds of samples dropped, clipping and frequency error.
+- **About the recorder:** its name and version, how long it has been recording, and how far the
+  computer's clock is from the radio system's.
+- **Who sends it:** the node's system ID and API key, as every upload does. Broadcastify doesn't
+  keep the key with the report.
+
+Nothing about people: no talkgroups, radio IDs, talker aliases or audio.
+
+### Turning them off
+
+Untick **Send health reports** (`healthReports: false`). Uploads carry on as before, but
+Broadcastify relies on these reports to look after your node, and without them:
+
+- **Your node can't be compared with others.** When several nodes upload the same system,
+  Broadcastify chooses whose calls to take by how well each one hears it. A node that doesn't
+  report can't be compared, so it may be given a lower priority or left out.
+- **Broadcastify can't tell you about problems.** It can't warn you of an outage, a lost control
+  channel, rising voice loss or other trends on your node, and it can't tell a node that's quiet
+  from one that's down.
+- **Support can't see how your node has been doing** when you ask for help with it.
+
+We recommend leaving them on.
 
 ## Sites
 

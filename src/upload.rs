@@ -23,17 +23,21 @@ pub struct Upload<'a> {
     pub audio: &'a Path,
 }
 
+/// How the plugin talks to Broadcastify (uploads and health reports): every answer read, not an error.
+pub fn agent(timeout: Duration, skip_certificate_check: bool) -> ureq::Agent {
+    let tls = ureq::tls::TlsConfig::builder().disable_verification(skip_certificate_check).build();
+    ureq::Agent::config_builder()
+        .timeout_global(Some(timeout))
+        .http_status_as_error(false)
+        .tls_config(tls)
+        .user_agent(concat!("trunk-pro-broadcastify/", env!("CARGO_PKG_VERSION")))
+        .build()
+        .into()
+}
+
 impl Uploader {
     pub fn new(server: &str, skip_certificate_check: bool) -> Uploader {
-        let tls = ureq::tls::TlsConfig::builder().disable_verification(skip_certificate_check).build();
-        let agent = ureq::Agent::config_builder()
-            .timeout_global(Some(Duration::from_secs(60)))
-            .http_status_as_error(false)
-            .tls_config(tls)
-            .user_agent(concat!("trunk-pro-broadcastify/", env!("CARGO_PKG_VERSION")))
-            .build()
-            .into();
-        Uploader { agent, server: server.to_string() }
+        Uploader { agent: agent(Duration::from_secs(60), skip_certificate_check), server: server.to_string() }
     }
 
     /// Sends the call; Err: Broadcastify turned down the node's settings.
@@ -62,11 +66,12 @@ impl Uploader {
             Err(e) => return Ok(Attempt::Retry(e.to_string())),
         };
         let status = resp.status().as_u16();
+        let retry_after = resp.headers().get("retry-after").and_then(|v| v.to_str().ok()).map(str::to_string);
         let text = resp.body_mut().read_to_string().unwrap_or_default();
         if let Some(what) = refused(&text) {
             return Err(Refusal { what, answer: text.trim().chars().take(200).collect() });
         }
-        let audio_url = match answer(status, &text) {
+        let audio_url = match answer(status, retry_after.as_deref(), &text) {
             Ok(url) => url,
             Err(a) => return Ok(a),
         };
@@ -148,7 +153,7 @@ fn loud(message: &str) -> String {
 }
 
 /// What the answer to the details means: where to send the audio, or what became of the call.
-fn answer(status: u16, text: &str) -> Result<String, Attempt> {
+fn answer(status: u16, retry_after: Option<&str>, text: &str) -> Result<String, Attempt> {
     let text = text.trim();
     if let Some((code, message)) = coded(text) {
         let m = loud(message);
@@ -163,14 +168,10 @@ fn answer(status: u16, text: &str) -> Result<String, Attempt> {
             _ => {}
         }
     }
-    if status != 200 {
+    if !(200..300).contains(&status) {
         let what: String = text.lines().next().unwrap_or("").chars().take(200).collect();
         let why = if what.is_empty() { format!("HTTP {status}") } else { format!("HTTP {status}: {what}") };
-        return Err(match status {
-            // Something about the request was wrong; it won't get better.
-            400..=499 if status != 408 && status != 429 => Attempt::Fail(why),
-            _ => Attempt::Retry(why),
-        });
+        return Err(Attempt::from_status(status, retry_after, why));
     }
     // (Trunk Recorder tries anything else again; so does this, but for
     // the refusals `refused` picks out first.)
@@ -224,7 +225,7 @@ fn fields(meta: &Value) -> Vec<(&'static str, String)> {
 /// files keep their real times.
 fn metadata(c: &ConcludedCall, concluded: Option<i64>) -> (Value, i64) {
     let mut v = serde_json::to_value(&c.call).unwrap_or_default();
-    let length_ms = Some(c.call.call_length_ms).filter(|&l| l > 0).unwrap_or((c.call.call_length * 1000.0).round() as i64);
+    let length_ms = c.call.audio_ms();
     if let Some(end) = concluded.filter(|&t| t > 0 && length_ms > 0) {
         let stop_ms = end * 1000;
         let start_ms = stop_ms - length_ms;
@@ -250,17 +251,22 @@ mod tests {
 
     #[test]
     fn answers() {
-        assert_eq!(answer(200, "0 https://s3.example/x.m4a?sig=1\n").unwrap(), "https://s3.example/x.m4a?sig=1");
-        assert!(matches!(answer(200, "1 SKIPPED: duplicate"), Err(Attempt::Skip(_))));
-        assert!(matches!(answer(200, "1 REJECTED: no such system"), Err(Attempt::Fail(_))));
-        assert!(matches!(answer(200, ""), Err(Attempt::Retry(_))));
-        assert!(matches!(answer(200, "1 Database busy"), Err(Attempt::Retry(_))));
-        assert!(matches!(answer(502, "Bad gateway"), Err(Attempt::Retry(_))));
-        assert!(matches!(answer(403, "Forbidden"), Err(Attempt::Fail(_))));
+        assert_eq!(answer(200, None, "0 https://s3.example/x.m4a?sig=1\n").unwrap(), "https://s3.example/x.m4a?sig=1");
+        assert!(matches!(answer(200, None, "1 SKIPPED: duplicate"), Err(Attempt::Skip(_))));
+        assert!(matches!(answer(200, None, "1 REJECTED: no such system"), Err(Attempt::Fail(_))));
+        assert!(matches!(answer(200, None, ""), Err(Attempt::Retry(_))));
+        assert!(matches!(answer(200, None, "1 Database busy"), Err(Attempt::Retry(_))));
+        assert!(matches!(answer(502, None, "Bad gateway"), Err(Attempt::Retry(_))));
+        assert!(matches!(answer(403, None, "Forbidden"), Err(Attempt::Fail(_))));
+        // Busy, and it said for how long: waited on.
+        assert!(matches!(answer(503, Some("90"), "Service Unavailable"), Err(Attempt::Wait(_, w)) if w.as_secs() == 90));
+        assert!(matches!(answer(429, None, ""), Err(Attempt::Retry(_))));
+        // A 2xx that isn't Broadcastify's answer: tried again, not taken as done.
+        assert!(matches!(answer(204, None, ""), Err(Attempt::Retry(_))));
         // The answers of Broadcastify's spec that aren't the node's settings.
-        assert!(matches!(answer(200, "1 SKIPPED---ALREADY-RECEIVED-THIS-CALL"), Err(Attempt::Skip(_))));
-        assert!(matches!(answer(200, "1 Skip-Unit-To-Unit-CT4"), Err(Attempt::Skip(_))));
-        assert!(matches!(answer(200, "1 REJECTED-CALL-SKEW-TOO-LONG-22-See:https://www.broadcastify.com/skew"), Err(Attempt::Fail(_))));
+        assert!(matches!(answer(200, None, "1 SKIPPED---ALREADY-RECEIVED-THIS-CALL"), Err(Attempt::Skip(_))));
+        assert!(matches!(answer(200, None, "1 Skip-Unit-To-Unit-CT4"), Err(Attempt::Skip(_))));
+        assert!(matches!(answer(200, None, "1 REJECTED-CALL-SKEW-TOO-LONG-22-See:https://www.broadcastify.com/skew"), Err(Attempt::Fail(_))));
         for text in [
             "1 NO-TG-SENT",
             "1 NO-FREQ-SENT",
@@ -271,11 +277,11 @@ mod tests {
             "1 INVALID-ENCODE-TYPE",
             "1 Nothing-Sent",
         ] {
-            assert!(matches!(answer(200, text), Err(Attempt::Fail(_))), "{text}");
+            assert!(matches!(answer(200, None, text), Err(Attempt::Fail(_))), "{text}");
         }
-        assert!(matches!(answer(500, "1 TRUNK-RECORDER-METADATA-ERROR"), Err(Attempt::Fail(_))), "with any status");
-        assert!(matches!(answer(500, "1 ERROR: Call Duration Must be Specified for Conventional Calls"), Err(Attempt::Fail(_))));
-        assert!(matches!(answer(200, "1 Uploads-disabled-systemwide"), Err(Attempt::Retry(_))));
+        assert!(matches!(answer(500, None, "1 TRUNK-RECORDER-METADATA-ERROR"), Err(Attempt::Fail(_))), "with any status");
+        assert!(matches!(answer(500, None, "1 ERROR: Call Duration Must be Specified for Conventional Calls"), Err(Attempt::Fail(_))));
+        assert!(matches!(answer(200, None, "1 Uploads-disabled-systemwide"), Err(Attempt::Retry(_))));
     }
 
     #[test]
