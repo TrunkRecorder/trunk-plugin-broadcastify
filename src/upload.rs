@@ -23,17 +23,21 @@ pub struct Upload<'a> {
     pub audio: &'a Path,
 }
 
+/// How the plugin talks to Broadcastify (uploads and health reports): every answer read, not an error.
+pub fn agent(timeout: Duration, skip_certificate_check: bool) -> ureq::Agent {
+    let tls = ureq::tls::TlsConfig::builder().disable_verification(skip_certificate_check).build();
+    ureq::Agent::config_builder()
+        .timeout_global(Some(timeout))
+        .http_status_as_error(false)
+        .tls_config(tls)
+        .user_agent(concat!("trunk-pro-broadcastify/", env!("CARGO_PKG_VERSION")))
+        .build()
+        .into()
+}
+
 impl Uploader {
     pub fn new(server: &str, skip_certificate_check: bool) -> Uploader {
-        let tls = ureq::tls::TlsConfig::builder().disable_verification(skip_certificate_check).build();
-        let agent = ureq::Agent::config_builder()
-            .timeout_global(Some(Duration::from_secs(60)))
-            .http_status_as_error(false)
-            .tls_config(tls)
-            .user_agent(concat!("trunk-pro-broadcastify/", env!("CARGO_PKG_VERSION")))
-            .build()
-            .into();
-        Uploader { agent, server: server.to_string() }
+        Uploader { agent: agent(Duration::from_secs(60), skip_certificate_check), server: server.to_string() }
     }
 
     /// Sends the call; Err: Broadcastify turned down the node's settings.

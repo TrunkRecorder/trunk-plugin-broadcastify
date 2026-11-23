@@ -2,16 +2,18 @@
 //! [Broadcastify Calls](https://www.broadcastify.com/calls/), as Trunk
 //! Recorder's Broadcastify uploader does.
 
+mod health;
 mod upload;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use trunk_recorder_plugin::health::{Recorder, Select};
 use trunk_recorder_plugin::{
-    Attempt, CallQueue, ConcludedCall, Host, Manifest, Plugin, QueueOptions, Setup, State, System, TalkgroupFilter, Talkgroups, format, topic,
+    Attempt, CallQueue, ConcludedCall, Host, Manifest, Plugin, QueueOptions, Setup, State, System, TalkgroupFilter, Talkgroups, Totals, format, topic,
 };
 
 use upload::{Upload, Uploader};
@@ -37,11 +39,20 @@ struct Config {
     /// Upload even when Broadcastify's security certificate has expired. Leave it off unless uploads fail with a certificate error.
     #[serde(alias = "broadcastifySslVerifyDisable")]
     skip_certificate_check: bool,
+    /// Send health reports
+    ///
+    /// Every 5 minutes, tell Broadcastify how well this recorder hears each system it uploads: whether it's decoding the control channel, the calls it missed, the voice it lost. Totals only: no talkgroups, radio IDs or audio. Leave it on: without reports, Broadcastify can't compare this node with others uploading the same system (it may get a lower priority or be left out), and can't tell you about outages, problems or trends on it.
+    health_reports: bool,
+    /// Health report server
+    ///
+    /// Leave it empty: beside the upload server.
+    #[schemars(url)]
+    health_server: String,
 }
 
 impl Default for Config {
     fn default() -> Self {
-        Config { server: DEFAULT_SERVER.into(), talker_aliases: true, skip_certificate_check: false }
+        Config { server: DEFAULT_SERVER.into(), talker_aliases: true, skip_certificate_check: false, health_reports: true, health_server: String::new() }
     }
 }
 
@@ -97,6 +108,8 @@ fn together(attempts: Vec<Attempt>) -> Attempt {
 
 struct Broadcastify {
     queue: CallQueue,
+    /// Health reports, one thread for each server they go to.
+    reports: Vec<health::Reports>,
 }
 
 /// A server's lane in the queue, and the name it goes by on the dashboard
@@ -115,7 +128,7 @@ impl Plugin for Broadcastify {
     fn manifest() -> Manifest {
         Manifest {
             name: "Broadcastify Calls".into(),
-            subscribe: vec![topic::CALL_CONCLUDED.into()],
+            subscribe: vec![topic::CALL_CONCLUDED.into(), topic::TOTALS.into()],
             audio_formats: vec![format::M4A.into()],
             // Each read per system: a system can upload elsewhere, its own way.
             system_overrides: vec!["server".into(), "talkerAliases".into(), "skipCertificateCheck".into()],
@@ -136,6 +149,8 @@ impl Plugin for Broadcastify {
         // after a rename (one saved by a recorder before ids, by short name).
         let mut targets: HashMap<String, Target> = HashMap::new();
         let mut names: HashMap<u32, String> = HashMap::new();
+        // Health reports' nodes, by where they go (and certificate check).
+        let mut health_nodes: BTreeMap<(String, bool), Vec<health::Node>> = BTreeMap::new();
         let data_dir = setup.data_dir.clone();
         for s in setup.systems {
             let Some(c) = &s.config else { continue };
@@ -174,6 +189,18 @@ impl Plugin for Broadcastify {
             if s.id != 0 {
                 names.insert(s.id, s.short_name.clone());
             }
+            if let Some(url) = health_url_of(&s.settings) {
+                let nodes = health_nodes.entry((url, skip)).or_default();
+                // The system's node is its sites but those that are a Broadcastify system of their own; each of those is a node too.
+                let mut select = Select::system(&s.short_name);
+                for (site, (id, key)) in sites.iter().filter(|(_, n)| Some(*n) != node(c)) {
+                    select = select.except(site);
+                    nodes.push(health::Node { system_id: *id, api_key: key.to_string(), select: Select::site(&s.short_name, site) });
+                }
+                if let Some((id, key)) = node(c) {
+                    nodes.push(health::Node { system_id: id, api_key: key.to_string(), select });
+                }
+            }
             targets.insert(s.short_name.clone(), Target { lane, uploader, aliases: s.settings.talker_aliases, filter, system: s });
         }
         if targets.is_empty() {
@@ -191,6 +218,7 @@ impl Plugin for Broadcastify {
         // Systems whose settings Broadcastify turned down, said once each.
         let refused = Mutex::new(HashSet::new());
         let status = host.clone();
+        let status_host = host.clone();
         let queue = CallQueue::start_by(host, opts, lane, move |call: &ConcludedCall| {
             let Some(t) = targets.get(&of(call)) else {
                 return Attempt::Skip("no Broadcastify API key for this system".into());
@@ -232,16 +260,42 @@ impl Plugin for Broadcastify {
                 });
             together(attempts.collect())
         });
-        Ok(Broadcastify { queue })
+        let name = if setup.host.name == "trunk-pro" { "trunk-recorder-pro".to_string() } else { setup.host.name.clone() };
+        let recorder = Recorder::new(name, setup.host.version.clone());
+        let reports =
+            health_nodes.into_iter().map(|((url, skip), nodes)| health::Reports::start(status_host.clone(), url, skip, recorder.clone(), nodes)).collect();
+        Ok(Broadcastify { queue, reports })
     }
 
     fn call_concluded(&mut self, call: ConcludedCall) {
         self.queue.push(call);
     }
 
+    fn totals(&mut self, t: Totals) {
+        for r in &self.reports {
+            r.push(t.clone());
+        }
+    }
+
     fn shutdown(&mut self, grace: Duration) {
         self.queue.shutdown(grace);
+        for r in &mut self.reports {
+            r.stop();
+        }
     }
+}
+
+/// Where a system's health reports go: none when they're off, or its upload server has no
+/// `call-health` beside its `call-upload`.
+fn health_url_of(settings: &Config) -> Option<String> {
+    if !settings.health_reports {
+        return None;
+    }
+    let own = settings.health_server.trim();
+    if !own.is_empty() {
+        return Some(own.to_string());
+    }
+    health::health_url(settings.server.trim())
 }
 
 /// Uploads worked on at once, for each server. Every system sending to the
@@ -475,6 +529,7 @@ mod tests {
         assert_eq!(s["properties"]["systemId"]["type"], "integer");
         let c = m.config.unwrap();
         assert_eq!(c["properties"]["talkerAliases"]["default"], true);
+        assert_eq!(c["properties"]["healthReports"]["default"], true);
         // What a system can set again is one of its settings.
         assert!(m.system_overrides.iter().all(|k| c["properties"].get(k).is_some()), "{:?}", m.system_overrides);
     }
@@ -510,6 +565,108 @@ mod tests {
         assert_eq!((ids, results), (Vec::<String>::new(), vec![Outcome::Skipped]));
         // A site of its own needs its system ID and key.
         assert!(run(system, json!({ "apiKey": "good" }), &[(8, "south")]).2.contains("site south"));
+    }
+
+    /// The recorder's health totals, as it sends them every 10 s: two sites of sys1, `north` and `south`.
+    fn totals(time: f64) -> Totals {
+        use trunk_recorder_plugin::{SiteScope, SourceScope, Total};
+        let up = time - 1000.0;
+        let site = |name: &str| SiteScope {
+            short_name: "sys1".into(),
+            site_name: name.into(),
+            key: format!("sys/sys1/site/{name}"),
+            protocol: "p25".into(),
+            control_channel_hz: Some(851_012_500),
+            source: Some(0),
+            ..Default::default()
+        };
+        let mut series = BTreeMap::new();
+        for name in ["north", "south"] {
+            let key = format!("sys/sys1/site/{name}");
+            series.insert(format!("{key}/cc/locked"), Total { sum: up, s: up, now: Some(1.0) });
+            series.insert(format!("{key}/cc/good"), Total { sum: up * 30.0, s: up, now: None });
+            series.insert(format!("{key}/cc/bad"), Total { sum: up, s: up, now: None });
+        }
+        series.insert("src/800/samples".into(), Total { sum: up * 8e6, s: up, now: None });
+        Totals {
+            time,
+            since: 1000.0,
+            series,
+            sites: vec![site("north"), site("south")],
+            sources: vec![SourceScope { key: "src/800".into(), index: 0, name: "800".into(), driver: "airspy".into(), auto_tune: false }],
+            ..Default::default()
+        }
+    }
+
+    /// Every system ID gets a report of its own part of the recorder: a site of its own goes to its ID alone.
+    #[test]
+    fn health_reports_go_to_each_node() {
+        let (dir, server) = (
+            testing::temp_dir("bcfy"),
+            MockServer::start(|req: &Request| match req.path.as_str() {
+                "/call-health" => (200, r#"{"nextS":300,"message":"leader for 3 talkgroups"}"#.into()),
+                _ => (404, String::new()),
+            }),
+        );
+        let mut h = testing::hello(&dir, json!({ "server": format!("{}/call-upload", server.url()) }));
+        h.systems[0].config = json!({ "apiKey": "good", "systemId": 42 });
+        // South is a Broadcastify system of its own; north, set again but to the system's own, isn't.
+        h.systems[0].sites = vec![
+            SiteInfo { id: 7, name: "north".into(), config: json!({ "apiKey": "good", "systemId": 42 }) },
+            SiteInfo { id: 8, name: "south".into(), config: json!({ "apiKey": "other", "systemId": 77 }) },
+        ];
+        h.host.name = "trunk-pro".into();
+        h.host.version = "0.3.9".into();
+        let mut msgs = vec![HostMessage::Hello(h)];
+        // Seven minutes of totals: each node's first report is due once in them.
+        msgs.extend((0..=42).map(|i| HostMessage::Totals(totals(1000.0 + i as f64 * 10.0))));
+        let out = testing::run::<Broadcastify>(msgs);
+        let reports: Vec<Value> = server.requests().iter().map(|r| serde_json::from_slice(&r.body).unwrap()).collect();
+        let of = |id: u64| reports.iter().filter(|r| r["node"]["systemId"] == id).cloned().collect::<Vec<_>>();
+        let (sys, south) = (of(42), of(77));
+        assert!(!sys.is_empty() && !south.is_empty(), "{reports:?}");
+        assert_eq!(sys[0]["node"]["apiKey"], "good");
+        assert_eq!(south[0]["node"]["apiKey"], "other");
+        let sites = |r: &Value| r["sites"].as_array().unwrap().iter().map(|s| s["name"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+        assert_eq!(sites(&sys[0]), ["north"]);
+        assert_eq!(sites(&south[0]), ["south"]);
+        let r = &sys[0];
+        assert_eq!((r["v"].as_u64(), r["window"]["start"].as_f64(), r["window"]["seq"].as_u64()), (Some(1), Some(1000.0), Some(0)));
+        let secs = r["window"]["end"].as_f64().unwrap() - 1000.0;
+        assert!(secs >= 60.0, "not before a minute in: {secs}");
+        assert_eq!(r["sites"][0]["cc"]["lockedS"].as_f64(), Some(secs));
+        assert_eq!(r["sites"][0]["cc"]["good"].as_f64(), Some(secs * 30.0));
+        assert_eq!(r["radios"][0]["kind"], "airspy");
+        assert_eq!((r["recorder"]["name"].as_str(), r["recorder"]["version"].as_str()), (Some("trunk-recorder-pro"), Some("0.3.9")));
+        // A second report of a node carries on where the first ended.
+        if sys.len() > 1 {
+            assert_eq!(sys[1]["window"]["start"], sys[0]["window"]["end"]);
+            assert_eq!(sys[1]["window"]["seq"], 1);
+        }
+        assert!(out.logs().iter().any(|l| l.1.contains("leader for 3 talkgroups")), "{:?}", out.logs());
+    }
+
+    /// A server that doesn't take reports (an answer that isn't one) is said once and tried less often; uploads go on.
+    #[test]
+    fn a_server_without_health_reports_is_left_alone() {
+        let (dir, server) = (testing::temp_dir("bcfy"), broadcastify());
+        let call = testing::call(&dir, "sys1", 101);
+        let mut msgs = vec![hello(&dir, server.url(), json!({ "apiKey": "good", "systemId": 42 }))];
+        msgs.extend((0..=100).map(|i| HostMessage::Totals(totals(1000.0 + i as f64 * 10.0))));
+        msgs.push(HostMessage::CallConcluded(call.clone()));
+        let out = testing::run::<Broadcastify>(msgs);
+        assert_eq!(out.results()[0].1, Outcome::Ok);
+        let tried = server.requests().iter().filter(|r| r.path == "/call-health").count();
+        assert!((1..=2).contains(&tried), "tried, then backed off: {tried}");
+        assert_eq!(out.logs().iter().filter(|l| l.1.contains("doesn't take node health reports")).count(), 1, "{:?}", out.logs());
+        // Off: never tried.
+        let server = broadcastify();
+        let mut h = testing::hello(&dir, json!({ "server": format!("{}/call-upload", server.url()), "healthReports": false }));
+        h.systems[0].config = json!({ "apiKey": "good", "systemId": 42 });
+        let mut msgs = vec![HostMessage::Hello(h)];
+        msgs.extend((0..=100).map(|i| HostMessage::Totals(totals(1000.0 + i as f64 * 10.0))));
+        testing::run::<Broadcastify>(msgs);
+        assert!(server.requests().is_empty());
     }
 
     /// A system can override the server, and whether talker aliases go.

@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.2.0]
+
+- **Health reports.** Every 5 minutes, at a random point of its own, each system ID tells
+  Broadcastify how well this recorder hears it: control channel time decoding, messages decoded and
+  lost, calls announced and why any weren't recorded, voice frames lost, radios' dropped samples and
+  clipping. Broadcastify can then prefer the node hearing a system best, and tell a quiet node from
+  a down one. On by default (**Send health reports**); they need Trunk Recorder Pro 0.3.9 or later,
+  and back off to hourly, said once, while the server doesn't take them. A site that's a
+  Broadcastify system of its own (its **Sites** settings) is reported to its own ID. Built with
+  trunk-recorder-plugin 0.14.0 (its `health` module and the `totals` topic). Pro 0.4.1 and earlier
+  keep a plugin taking `totals` on for every system and site; later ones still turn it off for
+  some. **Health report server**
+  sends them elsewhere. Turning them off leaves uploads as they are, but Broadcastify then can't
+  compare the node with others (it may get a lower priority or be left out) or tell you about
+  problems with it: see the README's [Health reports](README.md#health-reports).
+
 ## [0.1.8]
 
 - Four uploads at once for each server, up from two. Every system sending to the same server shares
