@@ -1,16 +1,5 @@
 # Changelog
 
-## [Unreleased]
-
-- Calls with no audio are no longer uploaded (the recorder keeps them when **Keep calls with no
-  audio** is on). They are marked skipped.
-- A busy Broadcastify (`429`/`503`) that says how long to wait (`Retry-After`) isn't sent the call
-  again sooner, for uploads and health reports alike: they read its answers as every plugin now does
-  (trunk-recorder-plugin's `Attempt::from_status`, `http::Failure`). Built with
-  trunk-recorder-plugin 0.15.0.
-- **Skip certificate checks** is set once, for every system: a system or site can't turn it on for itself.
-  One set that way before is ignored.
-
 ## [0.2.0]
 
 - **Health reports.** Every 5 minutes, at a random point of its own, each system ID tells
@@ -19,13 +8,21 @@
   clipping. Broadcastify can then prefer the node hearing a system best, and tell a quiet node from
   a down one. On by default (**Send health reports**); they need Trunk Recorder Pro 0.3.9 or later,
   and back off to hourly, said once, while the server doesn't take them. A site that's a
-  Broadcastify system of its own (its **Sites** settings) is reported to its own ID. Built with
-  trunk-recorder-plugin 0.14.0 (its `health` module and the `totals` topic). Pro 0.4.1 and earlier
+  Broadcastify system of its own (its **Sites** settings) is reported to its own ID. They use
+  trunk-recorder-plugin's `health` module and the `totals` topic. Pro 0.4.1 and earlier
   keep a plugin taking `totals` on for every system and site; later ones still turn it off for
   some. **Health report server**
   sends them elsewhere. Turning them off leaves uploads as they are, but Broadcastify then can't
   compare the node with others (it may get a lower priority or be left out) or tell you about
   problems with it: see the README's [Health reports](README.md#health-reports).
+- Calls with no audio are no longer uploaded (the recorder keeps them when **Keep calls with no
+  audio** is on). They are marked skipped.
+- A busy Broadcastify (`429`/`503`) that says how long to wait (`Retry-After`) isn't sent the call
+  again sooner, for uploads and health reports alike: they read its answers as every plugin now does
+  (trunk-recorder-plugin's `Attempt::from_status`, `http::Failure`). Built with
+  trunk-recorder-plugin 0.15.0.
+- **Skip certificate checks** is set once, for every system: a system or site can't turn it on for itself.
+  One set that way before is ignored.
 
 ## [0.1.8]
 
