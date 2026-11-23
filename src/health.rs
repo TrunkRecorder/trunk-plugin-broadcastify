@@ -28,38 +28,23 @@ pub fn health_url(upload_server: &str) -> Option<String> {
     s.strip_suffix("/call-upload").map(|base| format!("{base}/call-health"))
 }
 
-/// What became of one report.
-#[derive(Debug, PartialEq)]
-enum Sent {
-    Ok(Answer),
-    Failed(Failure, String),
-    /// The server doesn't take reports: not found, or an answer that isn't one (a page in the way).
-    NotTaken(String),
-}
-
-fn retry_after(r: &ureq::http::Response<ureq::Body>) -> Option<f64> {
-    r.headers().get("retry-after")?.to_str().ok()?.trim().parse::<f64>().ok()
-}
-
-fn send(agent: &ureq::Agent, url: &str, report: &Report) -> Sent {
+/// Sends a report: the service's answer, or why it wasn't taken (and what to say about it).
+fn send(agent: &ureq::Agent, url: &str, report: &Report) -> Result<Answer, (Failure, String)> {
     let mut r = match agent.post(url).header("Content-Type", "application/json").send(serde_json::to_vec(report).unwrap_or_default().as_slice()) {
         Ok(r) => r,
-        Err(e) => return Sent::Failed(Failure::Unreachable, e.to_string()),
+        Err(e) => return Err((Failure::Unreachable, e.to_string())),
     };
     let status = r.status().as_u16();
-    let after = retry_after(&r);
+    let retry_after = r.headers().get("retry-after").and_then(|v| v.to_str().ok()).map(str::to_string);
     let text = r.body_mut().read_to_string().unwrap_or_default();
     let said: String = text.trim().chars().take(200).collect();
-    match status {
-        200..=299 => match serde_json::from_str::<serde_json::Value>(&text) {
-            Ok(v) if v.is_object() => Sent::Ok(serde_json::from_value(v).unwrap_or_default()),
-            _ => Sent::NotTaken(format!("it answered \"{said}\"")),
-        },
-        404 | 405 => Sent::NotTaken(format!("HTTP {status}")),
-        401 | 403 => Sent::Failed(Failure::Refused, format!("HTTP {status}: {said}")),
-        429 | 503 => Sent::Failed(Failure::Busy(after), format!("HTTP {status}")),
-        400..=499 => Sent::Failed(Failure::Rejected, format!("HTTP {status}: {said}")),
-        _ => Sent::Failed(Failure::Unreachable, format!("HTTP {status}")),
+    if let Some(f) = Failure::from_status(status, retry_after.as_deref()) {
+        return Err((f, if said.is_empty() { format!("HTTP {status}") } else { format!("HTTP {status}: {said}") }));
+    }
+    match serde_json::from_str::<serde_json::Value>(&text) {
+        Ok(v) if v.is_object() => Ok(serde_json::from_value(v).unwrap_or_default()),
+        // Not a report's answer: a page in the way, or a server that doesn't take reports.
+        _ => Err((Failure::NotThere, format!("it answered \"{said}\""))),
     }
 }
 
@@ -110,7 +95,7 @@ fn run(host: Host, url: String, skip: bool, recorder: Recorder, nodes: Vec<Node>
             let node = json!({ "systemId": n.system_id, "apiKey": n.api_key });
             let Some(report) = r.report(&history, node, recorder.clone()) else { continue };
             match send(&agent, &url, &report) {
-                Sent::Ok(answer) => {
+                Ok(answer) => {
                     (told_down, told_not_taken) = (false, false);
                     r.delivered(&report, answer.next_s);
                     // What Broadcastify makes of the node, when it says something new.
@@ -119,21 +104,19 @@ fn run(host: Host, url: String, skip: bool, recorder: Recorder, nodes: Vec<Node>
                         *last_message = Some(m);
                     }
                 }
-                // (Said once; tried again less and less often, up to hourly, in case it's a page in the way.)
-                Sent::NotTaken(why) => {
-                    if !told_not_taken {
-                        told_not_taken = true;
-                        host.info(format!("{url} doesn't take node health reports ({why}); trying again less often"));
-                    }
-                    r.failed(&h, Failure::Busy(None));
-                }
-                Sent::Failed(f, why) => {
+                Err((f, why)) => {
                     match f {
                         Failure::Refused => host.warn(format!(
                             "Broadcastify refused the health report of system {} ({why}): not sending its reports until recording starts again",
                             n.system_id
                         )),
                         Failure::Rejected => host.warn(format!("Broadcastify turned down the health report of system {}: {why}", n.system_id)),
+                        // (Said once; the Reporter tries again less and less often, up to hourly.)
+                        Failure::NotThere if !told_not_taken => {
+                            told_not_taken = true;
+                            host.info(format!("{url} doesn't take node health reports ({why}); trying again less often"));
+                        }
+                        Failure::NotThere => {}
                         // Said once, not every 5 minutes.
                         _ if !told_down => {
                             told_down = true;

@@ -94,18 +94,6 @@ fn node(c: &SystemConfig) -> Option<(u32, &str)> {
     c.system_id.filter(|&id| id != 0 && !key.is_empty()).map(|id| (id, key))
 }
 
-/// One call's attempts, one for each Broadcastify system it went to, as one:
-/// try again if any should be, else failed if any was refused, else done if any took it.
-fn together(attempts: Vec<Attempt>) -> Attempt {
-    let rank = |a: &Attempt| match a {
-        Attempt::Retry(_) => 3,
-        Attempt::Fail(_) => 2,
-        Attempt::Done { .. } => 1,
-        Attempt::Skip(_) => 0,
-    };
-    attempts.into_iter().max_by_key(rank).unwrap_or(Attempt::Skip("nowhere to send it".into()))
-}
-
 struct Broadcastify {
     queue: CallQueue,
     /// Health reports, one thread for each server they go to.
@@ -258,10 +246,9 @@ impl Plugin for Broadcastify {
                         Attempt::Fail(m)
                     }
                 });
-            together(attempts.collect())
+            Attempt::together(attempts)
         });
-        let name = if setup.host.name == "trunk-pro" { "trunk-recorder-pro".to_string() } else { setup.host.name.clone() };
-        let recorder = Recorder::new(name, setup.host.version.clone());
+        let recorder = Recorder::of(&setup.host);
         let reports =
             health_nodes.into_iter().map(|((url, skip), nodes)| health::Reports::start(status_host.clone(), url, skip, recorder.clone(), nodes)).collect();
         Ok(Broadcastify { queue, reports })
