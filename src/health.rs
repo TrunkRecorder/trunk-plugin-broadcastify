@@ -33,7 +33,7 @@ pub fn health_url(upload_server: &str) -> Option<String> {
 enum Sent {
     Ok(Answer),
     Failed(Failure, String),
-    /// The server doesn't take reports (yet): not found, or an answer that isn't one.
+    /// The server doesn't take reports: not found, or an answer that isn't one (a page in the way).
     NotTaken(String),
 }
 
@@ -91,14 +91,7 @@ impl Reports {
 }
 
 fn run(host: Host, url: String, skip: bool, recorder: Recorder, nodes: Vec<Node>, rx: Receiver<Totals>) {
-    let tls = ureq::tls::TlsConfig::builder().disable_verification(skip).build();
-    let agent: ureq::Agent = ureq::Agent::config_builder()
-        .timeout_global(Some(Duration::from_secs(20)))
-        .http_status_as_error(false)
-        .tls_config(tls)
-        .user_agent(concat!("trunk-pro-broadcastify/", env!("CARGO_PKG_VERSION")))
-        .build()
-        .into();
+    let agent = crate::upload::agent(Duration::from_secs(20), skip);
     let mut nodes: Vec<(Node, Reporter, Option<String>)> = nodes
         .into_iter()
         .map(|n| {
@@ -107,7 +100,7 @@ fn run(host: Host, url: String, skip: bool, recorder: Recorder, nodes: Vec<Node>
         })
         .collect();
     let mut history = History::default();
-    let mut told_down = false;
+    let (mut told_down, mut told_not_taken) = (false, false);
     while let Ok(h) = rx.recv() {
         history.push(h.clone());
         for (n, r, last_message) in nodes.iter_mut() {
@@ -118,7 +111,7 @@ fn run(host: Host, url: String, skip: bool, recorder: Recorder, nodes: Vec<Node>
             let Some(report) = r.report(&history, node, recorder.clone()) else { continue };
             match send(&agent, &url, &report) {
                 Sent::Ok(answer) => {
-                    told_down = false;
+                    (told_down, told_not_taken) = (false, false);
                     r.delivered(&report, answer.next_s);
                     // What Broadcastify makes of the node, when it says something new.
                     if let Some(m) = answer.message.filter(|m| !m.is_empty() && Some(m) != last_message.as_ref()) {
@@ -126,9 +119,13 @@ fn run(host: Host, url: String, skip: bool, recorder: Recorder, nodes: Vec<Node>
                         *last_message = Some(m);
                     }
                 }
+                // (Said once; tried again less and less often, up to hourly, in case it's a page in the way.)
                 Sent::NotTaken(why) => {
-                    host.info(format!("{url} doesn't take node health reports ({why}); not sending them until recording starts again"));
-                    return;
+                    if !told_not_taken {
+                        told_not_taken = true;
+                        host.info(format!("{url} doesn't take node health reports ({why}); trying again less often"));
+                    }
+                    r.failed(&h, Failure::Busy(None));
                 }
                 Sent::Failed(f, why) => {
                     match f {

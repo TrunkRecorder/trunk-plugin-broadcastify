@@ -94,16 +94,15 @@ calls from the one hearing it best, and can tell a node that's up but has no
 calls from one that's down.
 A site with a system ID of its own is reported to that ID alone.
 
-Since the reports are made of every system's figures (the recorder's `totals`),
-the plugin is on for every system and site: Trunk Recorder Pro doesn't offer to
-turn it off for one. A system or site with no API key and system ID is neither
-uploaded nor reported.
+A system or site the plugin is turned off for in Trunk Recorder Pro is neither
+uploaded nor reported, nor is one with no API key and system ID. (Pro 0.4.1 and
+earlier keep a plugin taking `totals` on for every system and site.)
 
 Reports need Trunk Recorder Pro 0.3.9 or later (an older one doesn't send the
 plugin the `totals` they're made of) and go on a thread of their own, so uploads never
-wait on them. A report that fails is carried by the next. Until Broadcastify
-takes them (an answer that isn't a report's), the plugin says so once and
-stops sending them until recording starts again.
+wait on them. A report that fails is carried by the next. When the server
+doesn't take them (not found, or an answer that isn't a report's), the plugin
+says so once and tries again less and less often, up to once an hour.
 
 ### What a report contains
 

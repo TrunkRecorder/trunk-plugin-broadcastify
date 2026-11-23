@@ -646,7 +646,7 @@ mod tests {
         assert!(out.logs().iter().any(|l| l.1.contains("leader for 3 talkgroups")), "{:?}", out.logs());
     }
 
-    /// Until Broadcastify takes reports, a report's answer isn't one: the plugin stops sending them, and uploads go on.
+    /// A server that doesn't take reports (an answer that isn't one) is said once and tried less often; uploads go on.
     #[test]
     fn a_server_without_health_reports_is_left_alone() {
         let (dir, server) = (testing::temp_dir("bcfy"), broadcastify());
@@ -657,8 +657,8 @@ mod tests {
         let out = testing::run::<Broadcastify>(msgs);
         assert_eq!(out.results()[0].1, Outcome::Ok);
         let tried = server.requests().iter().filter(|r| r.path == "/call-health").count();
-        assert_eq!(tried, 1, "tried once");
-        assert!(out.logs().iter().any(|l| l.1.contains("doesn't take node health reports")), "{:?}", out.logs());
+        assert!((1..=2).contains(&tried), "tried, then backed off: {tried}");
+        assert_eq!(out.logs().iter().filter(|l| l.1.contains("doesn't take node health reports")).count(), 1, "{:?}", out.logs());
         // Off: never tried.
         let server = broadcastify();
         let mut h = testing::hello(&dir, json!({ "server": format!("{}/call-upload", server.url()), "healthReports": false }));
