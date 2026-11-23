@@ -8,6 +8,8 @@
   again sooner, for uploads and health reports alike: they read its answers as every plugin now does
   (trunk-recorder-plugin's `Attempt::from_status`, `http::Failure`). Built with
   trunk-recorder-plugin 0.15.0.
+- **Skip certificate checks** is set once, for every system: a system or site can't turn it on for itself.
+  One set that way before is ignored.
 
 ## [0.2.0]
 
