@@ -214,6 +214,10 @@ impl Plugin for Broadcastify {
             if call.call.encrypted {
                 return Attempt::Skip("encrypted".into());
             }
+            // Kept with none by "Keep calls with no audio": nothing to play.
+            if !call.call.has_audio() {
+                return Attempt::Skip("no audio".into());
+            }
             if !t.filter.passes(call.call.talkgroup) {
                 return Attempt::Skip(format!("talkgroup {} isn't uploaded (talkgroup filter)", call.call.talkgroup));
             }
@@ -473,6 +477,21 @@ mod tests {
         let out = testing::run::<Broadcastify>([hello(&dir, server.url(), json!({ "apiKey": "good", "systemId": 42 })), HostMessage::CallConcluded(call)]);
         assert_eq!(out.results()[0].1, Outcome::Skipped);
         assert!(server.requests().is_empty());
+    }
+
+    /// A call kept with no audio ("Keep calls with no audio"); a 0.4 s one, whose `call_length` says 0, has some.
+    #[test]
+    fn calls_with_no_audio_are_skipped() {
+        let (dir, server) = (testing::temp_dir("bcfy-silent"), broadcastify());
+        let mut silent = testing::call(&dir, "sys1", 101);
+        (silent.call.call_length, silent.call.call_length_ms) = (0.0, 0);
+        let out = testing::run::<Broadcastify>([hello(&dir, server.url(), json!({ "apiKey": "good", "systemId": 42 })), HostMessage::CallConcluded(silent)]);
+        assert_eq!(out.results()[0].1, Outcome::Skipped);
+        assert!(server.requests().is_empty());
+        let mut short = testing::call(&dir, "sys1", 102);
+        (short.call.call_length, short.call.call_length_ms) = (0.0, 400);
+        let out = testing::run::<Broadcastify>([hello(&dir, server.url(), json!({ "apiKey": "good", "systemId": 42 })), HostMessage::CallConcluded(short)]);
+        assert_eq!(out.results()[0].1, Outcome::Ok, "{:?}", out.results());
     }
 
     #[test]

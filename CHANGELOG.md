@@ -1,5 +1,14 @@
 # Changelog
 
+## [Unreleased]
+
+- Calls with no audio are no longer uploaded (the recorder keeps them when **Keep calls with no
+  audio** is on). They are marked skipped.
+- A busy Broadcastify (`429`/`503`) that says how long to wait (`Retry-After`) isn't sent the call
+  again sooner, for uploads and health reports alike: they read its answers as every plugin now does
+  (trunk-recorder-plugin's `Attempt::from_status`, `http::Failure`). Built with
+  trunk-recorder-plugin 0.15.0.
+
 ## [0.2.0]
 
 - **Health reports.** Every 5 minutes, at a random point of its own, each system ID tells

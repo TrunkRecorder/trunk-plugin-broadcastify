@@ -225,7 +225,7 @@ fn fields(meta: &Value) -> Vec<(&'static str, String)> {
 /// files keep their real times.
 fn metadata(c: &ConcludedCall, concluded: Option<i64>) -> (Value, i64) {
     let mut v = serde_json::to_value(&c.call).unwrap_or_default();
-    let length_ms = Some(c.call.call_length_ms).filter(|&l| l > 0).unwrap_or((c.call.call_length * 1000.0).round() as i64);
+    let length_ms = c.call.audio_ms();
     if let Some(end) = concluded.filter(|&t| t > 0 && length_ms > 0) {
         let stop_ms = end * 1000;
         let start_ms = stop_ms - length_ms;
