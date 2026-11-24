@@ -180,7 +180,7 @@ fn run(host: Host, url: String, skip: bool, recorder: Recorder, nodes: Vec<Node>
             if named.len() > 1 {
                 let on: Covers = named.into_iter().map(|s| (n.select.short_name.clone(), Some(s))).collect();
                 let what = several(n.system_id, &on);
-                if notices.add(n.system_id, what.clone()) {
+                if notices.add(&host, n.system_id, what.clone()) {
                     host.warn(format!("{what} {ADVICE}"));
                 }
             }

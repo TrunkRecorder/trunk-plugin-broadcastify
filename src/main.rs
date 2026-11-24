@@ -96,14 +96,9 @@ fn node(c: &SystemConfig) -> Option<(u32, &str)> {
 }
 
 struct Broadcastify {
-    host: Host,
     queue: CallQueue,
     /// Health reports, one thread for each server they go to.
     reports: Vec<health::Reports>,
-    /// System IDs uploading several sites: the plugin's status says so.
-    notices: sites::Notices,
-    /// Systems whose settings Broadcastify turned down (the status says so; that comes first).
-    refused: Arc<Mutex<HashSet<String>>>,
 }
 
 /// A server's lane in the queue, and the name it goes by on the dashboard
@@ -209,13 +204,13 @@ impl Plugin for Broadcastify {
         if targets.is_empty() {
             return Err("Add your Broadcastify API key and system ID to the systems you want to upload.".into());
         }
-        // Said in the log now, and as the plugin's status from the first totals on (the recorder
-        // says "running" once the plugin has started).
+        // Said in the log, and as a notice on the plugin's card (beside its status, which goes on
+        // saying how uploads are going).
         let notices = sites::Notices::default();
         for ((_, id), on) in covers.iter().filter(|(_, on)| on.len() > 1) {
             let what = sites::several(*id, on);
             host.warn(format!("{what} {}", sites::ADVICE));
-            notices.add(*id, what);
+            notices.add(&host, *id, what);
         }
         // Each server is a lane of the queue: one that's down holds up no other.
         let targets = Arc::new(targets);
@@ -227,8 +222,7 @@ impl Plugin for Broadcastify {
         let lane_of_call = of.clone();
         let lane = move |call: &ConcludedCall| lanes.get(&lane_of_call(call)).map(|t| t.lane.clone()).unwrap_or_default();
         // Systems whose settings Broadcastify turned down, said once each.
-        let refused = Arc::new(Mutex::new(HashSet::new()));
-        let refused_by = refused.clone();
+        let refused = Mutex::new(HashSet::new());
         let status = host.clone();
         let status_host = host.clone();
         let queue = CallQueue::start_by(host, opts, lane, move |call: &ConcludedCall| {
@@ -268,7 +262,7 @@ impl Plugin for Broadcastify {
                         // A site of its own is named so ("dcfd's site south").
                         let who = site.map_or_else(|| call.call.short_name.clone(), |s| format!("{}'s site {s}", call.call.short_name));
                         let m = r.message(&who, system_id);
-                        if refused_by.lock().unwrap().insert(who) {
+                        if refused.lock().unwrap().insert(who) {
                             status.status(State::Error, &m);
                         }
                         Attempt::Fail(m)
@@ -282,7 +276,7 @@ impl Plugin for Broadcastify {
             // One report per system ID: Broadcastify takes no more each interval.
             .map(|((url, skip), nodes)| health::Reports::start(status_host.clone(), url, skip, recorder.clone(), health::one_per_id(nodes), notices.clone()))
             .collect();
-        Ok(Broadcastify { host: status_host, queue, reports, notices, refused })
+        Ok(Broadcastify { queue, reports })
     }
 
     fn call_concluded(&mut self, call: ConcludedCall) {
@@ -292,12 +286,6 @@ impl Plugin for Broadcastify {
     fn totals(&mut self, t: Totals) {
         for r in &self.reports {
             r.push(t.clone());
-        }
-        // A system ID uploading several sites stays the status: said again (the recorder's "running",
-        // or the queue's "ok" once retries clear, replace it), but not over calls waiting to retry
-        // or settings Broadcastify turned down, which say more.
-        if let Some(m) = self.notices.status().filter(|_| self.queue.is_empty() && self.refused.lock().unwrap().is_empty()) {
-            self.host.status(State::Warning, m);
         }
     }
 
@@ -728,11 +716,12 @@ mod tests {
         assert!(server.requests().is_empty());
     }
 
-    /// A run with Broadcastify taking health reports: what was sent, what the plugin said, and its status.
+    /// A run with Broadcastify taking health reports: what was sent, what the plugin said, and its
+    /// notice of system IDs uploading several sites.
     struct Ran {
         reports: Vec<Value>,
         logs: Vec<String>,
-        status: Option<(State, String)>,
+        notice: Option<(State, String)>,
     }
 
     impl Ran {
@@ -759,7 +748,7 @@ mod tests {
         msgs.extend((0..=72).map(|i| HostMessage::Totals(make(from + i as f64 * 10.0))));
         let out = testing::run::<Broadcastify>(msgs);
         let reports = server.requests().iter().map(|r| serde_json::from_slice(&r.body).unwrap()).collect();
-        Ran { reports, logs: out.logs().into_iter().map(|l| l.1).collect(), status: out.status() }
+        Ran { reports, logs: out.logs().into_iter().map(|l| l.1).collect(), notice: out.notices().remove(sites::NOTICE) }
     }
 
     fn health_run(system: Value, sites: Vec<SiteInfo>, more: Vec<SystemInfo>) -> Ran {
@@ -787,7 +776,7 @@ mod tests {
         // A system's ID, and two sites without their own.
         let r = health_run(id(77), vec![site(7, "north", Value::Null), site(8, "south", Value::Null)], vec![]);
         assert_eq!(r.several(), [format!("Broadcastify system 77 is uploading 2 sites: north, south. {}", sites::ADVICE)]);
-        assert_eq!(r.status, Some((State::Warning, format!("Broadcastify system 77 is uploading 2 sites: north, south. {}", sites::ADVICE))));
+        assert_eq!(r.notice, Some((State::Warning, format!("Broadcastify system 77 is uploading 2 sites: north, south. {}", sites::ADVICE))));
         // One ID on each site's row.
         let r = health_run(json!({}), vec![site(7, "north", id(77)), site(8, "south", id(77))], vec![]);
         assert_eq!(r.several().len(), 1);
@@ -798,14 +787,14 @@ mod tests {
         // Two systems.
         let r = health_run(id(42), vec![], vec![system(1, "sys2", id(42))]);
         assert!(r.several()[0].starts_with("Broadcastify system 42 is uploading 2 sites: sys1, sys2."), "{:?}", r.logs);
-        assert_eq!(r.status.map(|s| s.0), Some(State::Warning));
+        assert_eq!(r.notice.map(|s| s.0), Some(State::Warning));
         // A site of each ID, a system of one site, a system with none: nothing to say.
         for (sys, sites) in
             [(id(77), vec![site(7, "north", Value::Null), site(8, "south", id(78))]), (id(77), vec![site(7, "north", Value::Null)]), (id(77), vec![])]
         {
             let r = health_run(sys, sites, vec![]);
             assert!(r.several().is_empty(), "{:?}", r.logs);
-            assert_ne!(r.status.map(|s| s.0), Some(State::Warning));
+            assert_eq!(r.notice, None);
         }
     }
 
@@ -823,7 +812,7 @@ mod tests {
         };
         let r = health_run_with(json!({ "apiKey": "good", "systemId": 42 }), vec![], vec![], 1000.0, with_ids(2));
         assert_eq!(r.several(), [format!("Broadcastify system 42 is uploading 2 sites: north, south. {}", sites::ADVICE)]);
-        assert_eq!(r.status.map(|s| s.0), Some(State::Warning));
+        assert_eq!(r.notice.map(|s| s.0), Some(State::Warning));
         let r = health_run_with(json!({ "apiKey": "good", "systemId": 42 }), vec![], vec![], 1000.0, with_ids(1));
         assert!(r.several().is_empty(), "receivers of one site: {:?}", r.logs);
     }
