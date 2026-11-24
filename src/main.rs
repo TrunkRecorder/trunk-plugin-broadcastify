@@ -3,6 +3,7 @@
 //! Recorder's Broadcastify uploader does.
 
 mod health;
+mod sites;
 mod upload;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -11,7 +12,7 @@ use std::time::Duration;
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use trunk_recorder_plugin::health::{Recorder, Select};
+use trunk_recorder_plugin::health::Recorder;
 use trunk_recorder_plugin::{
     Attempt, CallQueue, ConcludedCall, Host, Manifest, Plugin, QueueOptions, Setup, State, System, TalkgroupFilter, Talkgroups, Totals, format, topic,
 };
@@ -95,9 +96,14 @@ fn node(c: &SystemConfig) -> Option<(u32, &str)> {
 }
 
 struct Broadcastify {
+    host: Host,
     queue: CallQueue,
     /// Health reports, one thread for each server they go to.
     reports: Vec<health::Reports>,
+    /// System IDs uploading several sites: the plugin's status says so.
+    notices: sites::Notices,
+    /// Systems whose settings Broadcastify turned down (the status says so; that comes first).
+    refused: Arc<Mutex<HashSet<String>>>,
 }
 
 /// A server's lane in the queue, and the name it goes by on the dashboard
@@ -141,6 +147,8 @@ impl Plugin for Broadcastify {
         let mut names: HashMap<u32, String> = HashMap::new();
         // Health reports' nodes, by where they go (and certificate check).
         let mut health_nodes: BTreeMap<(String, bool), Vec<health::Node>> = BTreeMap::new();
+        // What each system ID uploads, by server: one ID uploading several sites is said ([`sites`]).
+        let mut covers: BTreeMap<(String, u32), sites::Covers> = BTreeMap::new();
         let data_dir = setup.data_dir.clone();
         for s in setup.systems {
             let Some(c) = &s.config else { continue };
@@ -163,6 +171,15 @@ impl Plugin for Broadcastify {
             if skip {
                 host.warn(format!("not checking the certificate of {server} for {}", s.short_name));
             }
+            // A site with an ID of its own goes to it; the others, to the system's.
+            for t in &s.sites {
+                if let Some((id, _)) = t.config.as_ref().and_then(node).or(node(c)) {
+                    covers.entry((server.clone(), id)).or_default().push((s.short_name.clone(), Some(t.name.clone())));
+                }
+            }
+            if let (true, Some((id, _))) = (s.sites.is_empty(), node(c)) {
+                covers.entry((server.clone(), id)).or_default().push((s.short_name.clone(), None));
+            }
             let uploader = uploaders.entry((server.clone(), skip)).or_insert_with(|| Arc::new(Uploader::new(&server, skip))).clone();
             let filter = c.talkgroups.filter_for(&s.short_name)?;
             let filtered = if filter.is_empty() { String::new() } else { format!(", talkgroups: {}", filter.describe()) };
@@ -179,21 +196,26 @@ impl Plugin for Broadcastify {
                 names.insert(s.id, s.short_name.clone());
             }
             if let Some(url) = health_url_of(&s.settings) {
-                let nodes = health_nodes.entry((url, skip)).or_default();
-                // The system's node is its sites but those that are a Broadcastify system of their own; each of those is a node too.
-                let mut select = Select::system(&s.short_name);
-                for (site, (id, key)) in sites.iter().filter(|(_, n)| Some(*n) != node(c)) {
-                    select = select.except(site);
-                    nodes.push(health::Node { system_id: *id, api_key: key.to_string(), select: Select::site(&s.short_name, site) });
+                // The system's node is its sites but those that are a Broadcastify system of their own; each of
+                // those IDs is a node too, with every site that names it.
+                let (nodes, notes) = health::nodes_of(&s.short_name, node(c), &sites);
+                for n in notes {
+                    host.warn(n);
                 }
-                if let Some((id, key)) = node(c) {
-                    nodes.push(health::Node { system_id: id, api_key: key.to_string(), select });
-                }
+                health_nodes.entry((url, skip)).or_default().extend(nodes);
             }
             targets.insert(s.short_name.clone(), Target { lane, uploader, aliases: s.settings.talker_aliases, filter, system: s });
         }
         if targets.is_empty() {
             return Err("Add your Broadcastify API key and system ID to the systems you want to upload.".into());
+        }
+        // Said in the log now, and as the plugin's status from the first totals on (the recorder
+        // says "running" once the plugin has started).
+        let notices = sites::Notices::default();
+        for ((_, id), on) in covers.iter().filter(|(_, on)| on.len() > 1) {
+            let what = sites::several(*id, on);
+            host.warn(format!("{what} {}", sites::ADVICE));
+            notices.add(*id, what);
         }
         // Each server is a lane of the queue: one that's down holds up no other.
         let targets = Arc::new(targets);
@@ -205,7 +227,8 @@ impl Plugin for Broadcastify {
         let lane_of_call = of.clone();
         let lane = move |call: &ConcludedCall| lanes.get(&lane_of_call(call)).map(|t| t.lane.clone()).unwrap_or_default();
         // Systems whose settings Broadcastify turned down, said once each.
-        let refused = Mutex::new(HashSet::new());
+        let refused = Arc::new(Mutex::new(HashSet::new()));
+        let refused_by = refused.clone();
         let status = host.clone();
         let status_host = host.clone();
         let queue = CallQueue::start_by(host, opts, lane, move |call: &ConcludedCall| {
@@ -245,7 +268,7 @@ impl Plugin for Broadcastify {
                         // A site of its own is named so ("dcfd's site south").
                         let who = site.map_or_else(|| call.call.short_name.clone(), |s| format!("{}'s site {s}", call.call.short_name));
                         let m = r.message(&who, system_id);
-                        if refused.lock().unwrap().insert(who) {
+                        if refused_by.lock().unwrap().insert(who) {
                             status.status(State::Error, &m);
                         }
                         Attempt::Fail(m)
@@ -254,9 +277,12 @@ impl Plugin for Broadcastify {
             Attempt::together(attempts)
         });
         let recorder = Recorder::of(&setup.host);
-        let reports =
-            health_nodes.into_iter().map(|((url, skip), nodes)| health::Reports::start(status_host.clone(), url, skip, recorder.clone(), nodes)).collect();
-        Ok(Broadcastify { queue, reports })
+        let reports = health_nodes
+            .into_iter()
+            // One report per system ID: Broadcastify takes no more each interval.
+            .map(|((url, skip), nodes)| health::Reports::start(status_host.clone(), url, skip, recorder.clone(), health::one_per_id(nodes), notices.clone()))
+            .collect();
+        Ok(Broadcastify { host: status_host, queue, reports, notices, refused })
     }
 
     fn call_concluded(&mut self, call: ConcludedCall) {
@@ -266,6 +292,12 @@ impl Plugin for Broadcastify {
     fn totals(&mut self, t: Totals) {
         for r in &self.reports {
             r.push(t.clone());
+        }
+        // A system ID uploading several sites stays the status: said again (the recorder's "running",
+        // or the queue's "ok" once retries clear, replace it), but not over calls waiting to retry
+        // or settings Broadcastify turned down, which say more.
+        if let Some(m) = self.notices.status().filter(|_| self.queue.is_empty() && self.refused.lock().unwrap().is_empty()) {
+            self.host.status(State::Warning, m);
         }
     }
 
@@ -670,6 +702,7 @@ mod tests {
             assert_eq!(sys[1]["window"]["seq"], 1);
         }
         assert!(out.logs().iter().any(|l| l.1.contains("leader for 3 talkgroups")), "{:?}", out.logs());
+        assert!(!out.logs().iter().any(|l| l.1.contains(" is uploading ")), "a site of each ID: nothing to say");
     }
 
     /// A server that doesn't take reports (an answer that isn't one) is said once and tried less often; uploads go on.
@@ -693,6 +726,152 @@ mod tests {
         msgs.extend((0..=100).map(|i| HostMessage::Totals(totals(1000.0 + i as f64 * 10.0))));
         testing::run::<Broadcastify>(msgs);
         assert!(server.requests().is_empty());
+    }
+
+    /// A run with Broadcastify taking health reports: what was sent, what the plugin said, and its status.
+    struct Ran {
+        reports: Vec<Value>,
+        logs: Vec<String>,
+        status: Option<(State, String)>,
+    }
+
+    impl Ran {
+        /// What it said of system IDs uploading several sites.
+        fn several(&self) -> Vec<&str> {
+            self.logs.iter().filter(|l| l.contains(" is uploading ")).map(String::as_str).collect()
+        }
+    }
+
+    /// Twelve minutes of totals (`make`, from `from`): two or three reports of each node.
+    fn health_run_with(system: Value, sites: Vec<SiteInfo>, more: Vec<SystemInfo>, from: f64, make: impl Fn(f64) -> Totals) -> Ran {
+        let (dir, server) = (
+            testing::temp_dir("bcfy"),
+            MockServer::start(|req: &Request| match req.path.as_str() {
+                "/call-health" => (200, r#"{"nextS":300}"#.into()),
+                _ => (404, String::new()),
+            }),
+        );
+        let mut h = testing::hello(&dir, json!({ "server": format!("{}/call-upload", server.url()) }));
+        h.systems[0].config = system;
+        h.systems[0].sites = sites;
+        h.systems.extend(more);
+        let mut msgs = vec![HostMessage::Hello(h)];
+        msgs.extend((0..=72).map(|i| HostMessage::Totals(make(from + i as f64 * 10.0))));
+        let out = testing::run::<Broadcastify>(msgs);
+        let reports = server.requests().iter().map(|r| serde_json::from_slice(&r.body).unwrap()).collect();
+        Ran { reports, logs: out.logs().into_iter().map(|l| l.1).collect(), status: out.status() }
+    }
+
+    fn health_run(system: Value, sites: Vec<SiteInfo>, more: Vec<SystemInfo>) -> Ran {
+        health_run_with(system, sites, more, 1000.0, totals)
+    }
+
+    fn sites_of(r: &Value) -> Vec<String> {
+        r["sites"].as_array().unwrap().iter().map(|s| s["name"].as_str().unwrap().to_string()).collect()
+    }
+
+    fn site(id: u32, name: &str, config: Value) -> SiteInfo {
+        SiteInfo { id, name: name.into(), config }
+    }
+
+    fn system(index: u16, short_name: &str, config: Value) -> SystemInfo {
+        SystemInfo { index, short_name: short_name.into(), kind: "p25".into(), config, ..Default::default() }
+    }
+
+    /// Broadcastify Calls has a system ID for each site: one uploading several is said, in the log
+    /// and as the plugin's status (uploads go on). Sites each with an ID of their own, or a
+    /// system of one site, are fine.
+    #[test]
+    fn a_system_id_uploading_several_sites_is_said() {
+        let id = |n: u32| json!({ "apiKey": "good", "systemId": n });
+        // A system's ID, and two sites without their own.
+        let r = health_run(id(77), vec![site(7, "north", Value::Null), site(8, "south", Value::Null)], vec![]);
+        assert_eq!(r.several(), [format!("Broadcastify system 77 is uploading 2 sites: north, south. {}", sites::ADVICE)]);
+        assert_eq!(r.status, Some((State::Warning, format!("Broadcastify system 77 is uploading 2 sites: north, south. {}", sites::ADVICE))));
+        // One ID on each site's row.
+        let r = health_run(json!({}), vec![site(7, "north", id(77)), site(8, "south", id(77))], vec![]);
+        assert_eq!(r.several().len(), 1);
+        assert!(r.several()[0].starts_with("Broadcastify system 77 is uploading 2 sites: north, south."), "{:?}", r.logs);
+        // On site rows of two systems.
+        let r = health_run(json!({}), vec![site(7, "north", id(77))], vec![system(1, "sys2", id(77))]);
+        assert!(r.several()[0].starts_with("Broadcastify system 77 is uploading 2 sites: sys1 (north), sys2."), "{:?}", r.logs);
+        // Two systems.
+        let r = health_run(id(42), vec![], vec![system(1, "sys2", id(42))]);
+        assert!(r.several()[0].starts_with("Broadcastify system 42 is uploading 2 sites: sys1, sys2."), "{:?}", r.logs);
+        assert_eq!(r.status.map(|s| s.0), Some(State::Warning));
+        // A site of each ID, a system of one site, a system with none: nothing to say.
+        for (sys, sites) in
+            [(id(77), vec![site(7, "north", Value::Null), site(8, "south", id(78))]), (id(77), vec![site(7, "north", Value::Null)]), (id(77), vec![])]
+        {
+            let r = health_run(sys, sites, vec![]);
+            assert!(r.several().is_empty(), "{:?}", r.logs);
+            assert_ne!(r.status.map(|s| s.0), Some(State::Warning));
+        }
+    }
+
+    /// Sites the settings don't show (ones that appear while recording) are said once a health
+    /// report names more than one under an ID. Receivers of one site are one site.
+    #[test]
+    fn sites_that_appear_while_recording_are_said() {
+        let with_ids = |south: u32| {
+            move |time: f64| {
+                let mut t = totals(time);
+                t.sites[0].identity.site = Some(1);
+                t.sites[1].identity.site = Some(south);
+                t
+            }
+        };
+        let r = health_run_with(json!({ "apiKey": "good", "systemId": 42 }), vec![], vec![], 1000.0, with_ids(2));
+        assert_eq!(r.several(), [format!("Broadcastify system 42 is uploading 2 sites: north, south. {}", sites::ADVICE)]);
+        assert_eq!(r.status.map(|s| s.0), Some(State::Warning));
+        let r = health_run_with(json!({ "apiKey": "good", "systemId": 42 }), vec![], vec![], 1000.0, with_ids(1));
+        assert!(r.several().is_empty(), "receivers of one site: {:?}", r.logs);
+    }
+
+    /// Sites that name the same system ID are one node: one report each interval with all of them,
+    /// not one per site (Broadcastify takes one report per system ID each interval).
+    #[test]
+    fn sites_sharing_a_system_id_are_one_report() {
+        let own = json!({ "apiKey": "good", "systemId": 77 });
+        for (sys, sites) in [
+            // No ID for the whole system; both sites name 77.
+            (json!({}), vec![site(7, "north", own.clone()), site(8, "south", own.clone())]),
+            // The system's ID, with sites of none of their own.
+            (own.clone(), vec![site(7, "north", Value::Null), site(8, "south", Value::Null)]),
+        ] {
+            let r = health_run(sys, sites, vec![]);
+            assert!((2..=3).contains(&r.reports.len()), "one node, every 5 minutes: {:?}", r.reports);
+            assert!(r.reports.iter().all(|r| r["node"]["systemId"] == 77 && sites_of(r) == ["north", "south"]), "{:?}", r.reports);
+            let seqs: Vec<u64> = r.reports.iter().map(|r| r["window"]["seq"].as_u64().unwrap()).collect();
+            assert_eq!(seqs, (0..r.reports.len() as u64).collect::<Vec<_>>());
+        }
+        // A site for each ID: a report for each.
+        let r = health_run(own, vec![site(7, "north", Value::Null), site(8, "south", json!({ "apiKey": "good", "systemId": 78 }))], vec![]);
+        assert!(r.reports.iter().any(|r| r["node"]["systemId"] == 77) && r.reports.iter().any(|r| r["node"]["systemId"] == 78));
+    }
+
+    /// Two recorder systems naming one system ID: a report can't cover both, so it's the first's.
+    #[test]
+    fn two_systems_with_one_id_are_reported_once() {
+        let id = json!({ "apiKey": "good", "systemId": 42 });
+        let r = health_run(id.clone(), vec![], vec![system(1, "sys2", id)]);
+        assert!((2..=3).contains(&r.reports.len()), "one node: {:?}", r.reports);
+        let seqs: Vec<u64> = r.reports.iter().map(|r| r["window"]["seq"].as_u64().unwrap()).collect();
+        assert_eq!(seqs, (0..r.reports.len() as u64).collect::<Vec<_>>());
+    }
+
+    /// A plugin (re)started while recording is under way has one totals to go on: no report with no
+    /// time in it (Broadcastify turns those down); the next totals give it a window.
+    #[test]
+    fn a_restarted_plugin_sends_no_empty_window() {
+        // Recording since 1000, the plugin's first totals at 5000.
+        let r = health_run_with(json!({ "apiKey": "good", "systemId": 42 }), vec![], vec![], 5000.0, totals);
+        assert!(!r.reports.is_empty());
+        for r in &r.reports {
+            assert!(r["window"]["end"].as_f64() > r["window"]["start"].as_f64(), "{r}");
+        }
+        assert_eq!(r.reports[0]["window"]["gap"], true, "the time before the plugin started isn't in it");
+        assert_eq!(r.reports[0]["window"]["start"], 5000.0);
     }
 
     /// A system can override the server, and whether talker aliases go.
