@@ -42,14 +42,15 @@ to both. A call only the system's other sites heard goes to the system's. With n
 whole system, only the calls a site of its own heard are uploaded. **Sites** on the card turns the
 plugin off for a site: a call only it heard isn't uploaded.
 
-**If one system ID covers several sites, the plugin warns you**, in its status and its log:
+**If one system ID covers several sites, the plugin warns you**, on its card and in its log:
 Broadcastify Calls records every call a system ID uploads as coming from the site it's registered
 to, so the other sites' calls would be labeled as the wrong site. That's one system ID for a system
 with several sites and no IDs on their rows, one ID typed into several site rows, or one ID on
 several systems. Uploads go on as they are. A site that appears while recording is caught from the
 health reports. If you need more system IDs, apply at
 [broadcastify.com/apply/calls](https://www.broadcastify.com/apply/calls) (you can use your existing
-API key).
+API key). The warning on the card needs Trunk Recorder Pro after 0.5.0; earlier
+versions show it in the log only.
 
 On a conventional node, Broadcastify knows each channel by its slot, listed on
 the node's page at [broadcastify.com/calls/manage](https://www.broadcastify.com/calls/manage/):
