@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.2.1]
+
+- **A warning when one Broadcastify system ID covers several sites.** Broadcastify Calls records
+  every call a system ID uploads as coming from the site it's registered to, so the other sites'
+  calls were labeled as the wrong site. The plugin now says so (uploads go on as they are), in the
+  log and as its status, which stays until recording starts again (it isn't cleared by an upload
+  going through; calls waiting to retry and refused settings still show first). It's checked at
+  start (a system's ID with several sites that have none of their own, one ID on several site rows,
+  one ID on several systems) and from the health reports, for sites that appear while recording.
+  Each site gets its own ID in its row in the plugin's settings; more can be applied for at
+  broadcastify.com/apply/calls.
+- **One health report per system ID.** Sites of a system that name the same Broadcastify system ID
+  (with no ID for the whole system, or each set to one) sent a report each, every interval, all as
+  that ID; Broadcastify takes one per ID each interval and turned the rest away (`429`). They're
+  now one report of all those sites. Two recorder systems on one ID are reported for the first.
+  One ID given two API keys is said (reports use the first).
+- No report with no time in it. A plugin (re)started while the recorder was already recording (its
+  settings saved, say) sent a first report whose window began where it ended, which Broadcastify
+  turned down (`400 window.end must be after window.start`). It now waits for the next totals.
+
 ## [0.2.0]
 
 - **Health reports.** Every 5 minutes, at a random point of its own, each system ID tells

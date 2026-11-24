@@ -35,12 +35,21 @@ For each system:
 | **Only these** | With **Only some**: upload these talkgroups and no others. |
 | **Except these** | With **Only some** or **All but some**: never upload these. |
 
-A system with several sites has a row for each of them on its card in Setup. A site that's a system
-of its own on Broadcastify Calls gets its **System ID** (and **API key**, if not the system's) there:
+A system with several sites has a row for each of them on its card in Setup. Each site needs its own
+Broadcastify system ID, given in its row as its **System ID** (and **API key**, if not the system's):
 every call it heard goes to it, whichever site's copy was kept, and a call two such sites heard goes
 to both. A call only the system's other sites heard goes to the system's. With no API key for the
 whole system, only the calls a site of its own heard are uploaded. **Sites** on the card turns the
 plugin off for a site: a call only it heard isn't uploaded.
+
+**If one system ID covers several sites, the plugin warns you**, in its status and its log:
+Broadcastify Calls records every call a system ID uploads as coming from the site it's registered
+to, so the other sites' calls would be labeled as the wrong site. That's one system ID for a system
+with several sites and no IDs on their rows, one ID typed into several site rows, or one ID on
+several systems. Uploads go on as they are. A site that appears while recording is caught from the
+health reports. If you need more system IDs, apply at
+[broadcastify.com/apply/calls](https://www.broadcastify.com/apply/calls) (you can use your existing
+API key).
 
 On a conventional node, Broadcastify knows each channel by its slot, listed on
 the node's page at [broadcastify.com/calls/manage](https://www.broadcastify.com/calls/manage/):
@@ -92,7 +101,9 @@ and the voice frames it lost, along with its radios' dropped samples and
 clipping. When several nodes upload one system, Broadcastify can take its
 calls from the one hearing it best, and can tell a node that's up but has no
 calls from one that's down.
-A site with a system ID of its own is reported to that ID alone.
+A site with a system ID of its own is reported to that ID alone. Sites left on
+one system ID are one report (Broadcastify takes one report per system ID each
+interval); two recorder systems on one ID are reported for the first.
 
 A system or site the plugin is turned off for in Trunk Recorder Pro is neither
 uploaded nor reported, nor is one with no API key and system ID. (Pro 0.4.1 and
@@ -142,10 +153,10 @@ We recommend leaving them on.
 
 In Trunk Recorder Pro a system can have several sites, and a call heard on
 more than one is saved once, from the site that heard it best. Each call says
-which site that was. When Broadcastify Calls has one system for all of them,
-there is nothing to set. When it has a system for each site (as Trunk Recorder
-set them up, a system per site), list those sites under **Sites of their
-own**: a call goes to its site's system. A setup from before sites existed
+which site that was. Broadcastify Calls has a system ID for each site (as
+Trunk Recorder set them up, a system per site): give each site its own in its
+row on the system's card, and a call goes to the system of every site that heard
+it. Sites left on one system ID are uploaded as one, and the plugin warns you. A setup from before sites existed
 became one system with a site per old system, keeping the first one's
 Broadcastify settings; add the others' system IDs here.
 
