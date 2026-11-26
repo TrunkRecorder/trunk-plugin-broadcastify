@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.2.2]
 
 - **Short, stable reasons for skipped and failed calls** (SDK 0.17.0). Trunk Recorder Pro after 0.5.1
   counts a plugin's calls by the reason it gives, on its card. A node whose calls another node on the
