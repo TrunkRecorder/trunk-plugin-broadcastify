@@ -84,6 +84,16 @@ waiting. Calls still waiting when recording stops are kept, and sent when it
 starts again. A call Broadcastify answers `SKIPPED` is marked skipped; one it
 answers `REJECTED` is marked failed and not tried again.
 
+**All skipped, none sent?** When another node already uploads the same system
+or site, Broadcastify keeps one copy of each call and answers the other
+`SKIPPED---ALREADY-RECEIVED-THIS-CALL`. The plugin card's **Why calls were
+skipped** says so ("Broadcastify already has this call: another node on the
+system sent it first, so this node is a backup"), and Broadcastify Calls shows
+as up, as it answered. Nothing is wrong: keep the node running. If the other
+node stops or its audio is worse, Broadcastify takes this node's copies
+instead, with nothing to change. The node's page on Broadcastify counts them as
+Dup Calls.
+
 When Broadcastify turns down a system's settings (`1 Invalid-API-Key`, no API
 key, an unknown system ID, a key not allowed to upload that system), its calls
 fail at once instead of waiting on retries, and the plugin's status says what

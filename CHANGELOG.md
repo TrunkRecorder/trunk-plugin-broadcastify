@@ -1,5 +1,15 @@
 # Changelog
 
+## [Unreleased]
+
+- **Why calls were skipped, in plain words** (SDK 0.17.0). A node whose calls another node on the
+  same system already sends showed Sent 0 and hundreds skipped, and Broadcastify Calls "unknown",
+  with nothing to say why. Broadcastify's `SKIPPED---ALREADY-RECEIVED-THIS-CALL` is now "Broadcastify
+  already has this call: another node on the system sent it first, so this node is a backup", and
+  `Skip-Unit-To-Unit-*` "a unit-to-unit call: Broadcastify doesn't take them". Trunk Recorder Pro
+  after 0.5.1 counts skips by these on the plugin's card. As Broadcastify answered, these calls
+  count as it answering: Broadcastify Calls shows as up.
+
 ## [0.2.1]
 
 - **A warning when one Broadcastify system ID covers several sites.** Broadcastify Calls records
