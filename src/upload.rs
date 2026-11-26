@@ -6,11 +6,13 @@ use std::path::Path;
 use std::time::{Duration, UNIX_EPOCH};
 
 use serde_json::{Value, json};
-use trunk_recorder_plugin::{Attempt, ConcludedCall, Multipart};
+use trunk_recorder_plugin::{Attempt, ConcludedCall, Host, Multipart};
 
 pub struct Uploader {
     agent: ureq::Agent,
     server: String,
+    /// For what a call's reason leaves out (Broadcastify's whole answer).
+    log: Host,
 }
 
 /// What Broadcastify needs to know about a call, besides its audio.
@@ -36,15 +38,15 @@ pub fn agent(timeout: Duration, skip_certificate_check: bool) -> ureq::Agent {
 }
 
 impl Uploader {
-    pub fn new(server: &str, skip_certificate_check: bool) -> Uploader {
-        Uploader { agent: agent(Duration::from_secs(60), skip_certificate_check), server: server.to_string() }
+    pub fn new(server: &str, skip_certificate_check: bool, log: Host) -> Uploader {
+        Uploader { agent: agent(Duration::from_secs(60), skip_certificate_check), server: server.to_string(), log }
     }
 
     /// Sends the call; Err: Broadcastify turned down the node's settings.
     pub fn upload(&self, u: &Upload) -> Result<Attempt, Refusal> {
         let audio = match std::fs::read(u.audio) {
             Ok(b) => b,
-            Err(e) => return Ok(Attempt::Fail(format!("can't read {}: {e}", u.audio.display()))),
+            Err(e) => return Ok(Attempt::Fail(format!("can't read its M4A: {e}"))),
         };
         let concluded = std::fs::metadata(&u.call.files.json).and_then(|m| m.modified()).ok();
         let concluded = concluded.and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map(|d| d.as_secs() as i64);
@@ -73,7 +75,13 @@ impl Uploader {
         }
         let audio_url = match answer(status, retry_after.as_deref(), &text) {
             Ok(url) => url,
-            Err(a) => return Ok(a),
+            Err(a) => {
+                // The reason is the same for every call; the log has what Broadcastify said of this one.
+                if matches!(&a, Attempt::Fail(m) if m == SKEW) {
+                    self.log.warn(format!("{}: Broadcastify: {}", u.call.path, text.trim()));
+                }
+                return Ok(a);
+            }
         };
         let r = self.agent.put(&audio_url).header("Content-Type", "audio/aac").send(&audio[..]);
         Ok(match r {
@@ -152,6 +160,17 @@ fn loud(message: &str) -> String {
     message.to_ascii_uppercase().replace(['_', ' '], "-")
 }
 
+// The reasons of Broadcastify's answers, as the card counts them (the same for every call).
+/// `SKIPPED---ALREADY-RECEIVED-THIS-CALL`: another node hearing the system (or, on a retry, this
+/// one's earlier try) sent it first. Which copy is kept is Broadcastify's choice; this node's are
+/// the backup, taken if the other node stops or its audio is worse.
+pub const ALREADY_RECEIVED: &str = "already received";
+/// `Skip-Unit-To-Unit-CT3`/`CT4`: a private call (a talkgroup above 65535), which it doesn't take.
+pub const UNIT_TO_UNIT: &str = "unit-to-unit";
+/// `REJECTED-CALL-SKEW-TOO-LONG-<s>-See:…`: the call reached it too long after it was heard
+/// (this computer's clock is off, or delay rules held it). Its seconds differ call by call.
+pub const SKEW: &str = "Broadcastify: too long after the call (REJECTED-CALL-SKEW): check this computer's clock and delay rules";
+
 /// What the answer to the details means: where to send the audio, or what became of the call.
 fn answer(status: u16, retry_after: Option<&str>, text: &str) -> Result<String, Attempt> {
     let text = text.trim();
@@ -160,8 +179,12 @@ fn answer(status: u16, retry_after: Option<&str>, text: &str) -> Result<String, 
         let said = || format!("Broadcastify: {message}");
         match code {
             0 if message.starts_with("http") => return Ok(message.to_string()),
-            // Already taken (from this node or another hearing the system), or a unit-to-unit call, which it doesn't take.
-            1 if m.starts_with("SKIPPED") || m.starts_with("SKIP-UNIT-TO-UNIT") => return Err(Attempt::Skip(said())),
+            // Broadcastify answered and turned it away, as it means to: the call is skipped, and it
+            // counts as answering.
+            1 if m.starts_with("SKIPPED---ALREADY-RECEIVED") => return Err(Attempt::Declined(ALREADY_RECEIVED.into())),
+            1 if m.starts_with("SKIP-UNIT-TO-UNIT") => return Err(Attempt::Declined(UNIT_TO_UNIT.into())),
+            1 if m.starts_with("SKIPPED") => return Err(Attempt::Declined(said())),
+            1 if m.starts_with("REJECTED-CALL-SKEW") => return Err(Attempt::Fail(SKEW.into())),
             1 if m.starts_with("REJECTED") => return Err(Attempt::Fail(said())),
             // Something the request lacks, or a slot the node doesn't have: sending it again won't help.
             1 if FIX_THE_REQUEST.iter().any(|w| m.contains(w)) => return Err(Attempt::Fail(said())),
@@ -252,7 +275,7 @@ mod tests {
     #[test]
     fn answers() {
         assert_eq!(answer(200, None, "0 https://s3.example/x.m4a?sig=1\n").unwrap(), "https://s3.example/x.m4a?sig=1");
-        assert!(matches!(answer(200, None, "1 SKIPPED: duplicate"), Err(Attempt::Skip(_))));
+        assert!(matches!(answer(200, None, "1 SKIPPED: duplicate"), Err(Attempt::Declined(m)) if m == "Broadcastify: SKIPPED: duplicate"));
         assert!(matches!(answer(200, None, "1 REJECTED: no such system"), Err(Attempt::Fail(_))));
         assert!(matches!(answer(200, None, ""), Err(Attempt::Retry(_))));
         assert!(matches!(answer(200, None, "1 Database busy"), Err(Attempt::Retry(_))));
@@ -264,9 +287,9 @@ mod tests {
         // A 2xx that isn't Broadcastify's answer: tried again, not taken as done.
         assert!(matches!(answer(204, None, ""), Err(Attempt::Retry(_))));
         // The answers of Broadcastify's spec that aren't the node's settings.
-        assert!(matches!(answer(200, None, "1 SKIPPED---ALREADY-RECEIVED-THIS-CALL"), Err(Attempt::Skip(_))));
-        assert!(matches!(answer(200, None, "1 Skip-Unit-To-Unit-CT4"), Err(Attempt::Skip(_))));
-        assert!(matches!(answer(200, None, "1 REJECTED-CALL-SKEW-TOO-LONG-22-See:https://www.broadcastify.com/skew"), Err(Attempt::Fail(_))));
+        assert!(matches!(answer(200, None, "1 SKIPPED---ALREADY-RECEIVED-THIS-CALL"), Err(Attempt::Declined(m)) if m == ALREADY_RECEIVED));
+        assert!(matches!(answer(200, None, "1 Skip-Unit-To-Unit-CT4"), Err(Attempt::Declined(m)) if m == UNIT_TO_UNIT));
+        assert!(matches!(answer(200, None, "1 REJECTED-CALL-SKEW-TOO-LONG-22-See:https://www.broadcastify.com/skew"), Err(Attempt::Fail(m)) if m == SKEW));
         for text in [
             "1 NO-TG-SENT",
             "1 NO-FREQ-SENT",

@@ -84,6 +84,11 @@ waiting. Calls still waiting when recording stops are kept, and sent when it
 starts again. A call Broadcastify answers `SKIPPED` is marked skipped; one it
 answers `REJECTED` is marked failed and not tried again.
 
+**All skipped as already received?** Another node uploads the same system or
+site, and Broadcastify keeps one copy of each call. Nothing is wrong: this node
+is a backup, and Broadcastify takes its copies if the other node stops. See
+[When an upload fails](https://github.com/TrunkRecorder/trunk-recorder-pro/blob/main/docs/plugins/broadcastify.md#when-an-upload-fails).
+
 When Broadcastify turns down a system's settings (`1 Invalid-API-Key`, no API
 key, an unknown system ID, a key not allowed to upload that system), its calls
 fail at once instead of waiting on retries, and the plugin's status says what
