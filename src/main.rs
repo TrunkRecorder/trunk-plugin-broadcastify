@@ -237,7 +237,7 @@ impl Plugin for Broadcastify {
                 return Attempt::Skip("no audio".into());
             }
             if !t.filter.passes(call.call.talkgroup) {
-                return Attempt::Skip(format!("talkgroup {} isn't uploaded (talkgroup filter)", call.call.talkgroup));
+                return Attempt::Skip("talkgroup filter".into());
             }
             let Some(m4a) = &call.files.m4a else {
                 return Attempt::Fail("this call couldn't be encoded as M4A".into());
