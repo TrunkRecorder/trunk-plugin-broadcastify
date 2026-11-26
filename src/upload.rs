@@ -6,11 +6,13 @@ use std::path::Path;
 use std::time::{Duration, UNIX_EPOCH};
 
 use serde_json::{Value, json};
-use trunk_recorder_plugin::{Attempt, ConcludedCall, Multipart};
+use trunk_recorder_plugin::{Attempt, ConcludedCall, Host, Multipart};
 
 pub struct Uploader {
     agent: ureq::Agent,
     server: String,
+    /// For what a call's reason leaves out (Broadcastify's whole answer).
+    log: Host,
 }
 
 /// What Broadcastify needs to know about a call, besides its audio.
@@ -36,8 +38,8 @@ pub fn agent(timeout: Duration, skip_certificate_check: bool) -> ureq::Agent {
 }
 
 impl Uploader {
-    pub fn new(server: &str, skip_certificate_check: bool) -> Uploader {
-        Uploader { agent: agent(Duration::from_secs(60), skip_certificate_check), server: server.to_string() }
+    pub fn new(server: &str, skip_certificate_check: bool, log: Host) -> Uploader {
+        Uploader { agent: agent(Duration::from_secs(60), skip_certificate_check), server: server.to_string(), log }
     }
 
     /// Sends the call; Err: Broadcastify turned down the node's settings.
@@ -73,7 +75,13 @@ impl Uploader {
         }
         let audio_url = match answer(status, retry_after.as_deref(), &text) {
             Ok(url) => url,
-            Err(a) => return Ok(a),
+            Err(a) => {
+                // The reason is the same for every call; the log has what Broadcastify said of this one.
+                if matches!(&a, Attempt::Fail(m) if m == SKEW) {
+                    self.log.warn(format!("{}: Broadcastify: {}", u.call.path, text.trim()));
+                }
+                return Ok(a);
+            }
         };
         let r = self.agent.put(&audio_url).header("Content-Type", "audio/aac").send(&audio[..]);
         Ok(match r {

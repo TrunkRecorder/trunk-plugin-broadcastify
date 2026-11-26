@@ -175,7 +175,7 @@ impl Plugin for Broadcastify {
             if let (true, Some((id, _))) = (s.sites.is_empty(), node(c)) {
                 covers.entry((server.clone(), id)).or_default().push((s.short_name.clone(), None));
             }
-            let uploader = uploaders.entry((server.clone(), skip)).or_insert_with(|| Arc::new(Uploader::new(&server, skip))).clone();
+            let uploader = uploaders.entry((server.clone(), skip)).or_insert_with(|| Arc::new(Uploader::new(&server, skip, host.clone()))).clone();
             let filter = c.talkgroups.filter_for(&s.short_name)?;
             let filtered = if filter.is_empty() { String::new() } else { format!(", talkgroups: {}", filter.describe()) };
             let lane = lane_of(&server);
@@ -225,6 +225,7 @@ impl Plugin for Broadcastify {
         let refused = Mutex::new(HashSet::new());
         let status = host.clone();
         let status_host = host.clone();
+        let log = host.clone();
         let queue = CallQueue::start_by(host, opts, lane, move |call: &ConcludedCall| {
             let Some(t) = targets.get(&of(call)) else {
                 return Attempt::Skip("no Broadcastify API key for this system".into());
@@ -237,6 +238,7 @@ impl Plugin for Broadcastify {
                 return Attempt::Skip("no audio".into());
             }
             if !t.filter.passes(call.call.talkgroup) {
+                log.info(format!("{}: talkgroup {} isn't uploaded (talkgroup filter)", call.path, call.call.talkgroup));
                 return Attempt::Skip("talkgroup filter".into());
             }
             let Some(m4a) = &call.files.m4a else {
@@ -344,6 +346,7 @@ mod tests {
             let meta: Value = serde_json::from_str(&field("metadata")).unwrap_or_default();
             match (field("apiKey").as_str(), field("systemId").as_str(), meta["talkgroup"].as_u64()) {
                 (_, _, Some(999)) => (200, "1 SKIPPED: talkgroup not monitored".into()),
+                (_, _, Some(998)) => (200, "1 REJECTED-CALL-SKEW-TOO-LONG-22-See:https://www.broadcastify.com/skew".into()),
                 ("good", "42", _) => (200, format!("0 http://{}/audio/abc.m4a?sig=1", req.header("host").unwrap())),
                 ("good", _, _) => (200, "1 REJECTED: system mismatch".into()),
                 _ => (200, "1 Invalid-API-Key".into()),
@@ -456,10 +459,30 @@ mod tests {
         let mut r: Vec<(String, Outcome)> = out.results().into_iter().map(|(p, o, _, _)| (p.split('/').next_back().unwrap()[..3].to_string(), o)).collect();
         r.sort_by_key(|x| x.0.clone());
         assert_eq!(r, [("101".into(), Outcome::Ok), ("109".into(), Outcome::Skipped), ("205".into(), Outcome::Ok), ("300".into(), Outcome::Skipped)]);
+        // One reason for every filtered call; which talkgroup is in the log.
+        assert!(out.results().iter().filter(|x| x.1 == Outcome::Skipped).all(|x| x.2 == "talkgroup filter"));
+        assert!(out.logs().iter().any(|(_, l)| l.ends_with("talkgroup 109 isn't uploaded (talkgroup filter)")), "{:?}", out.logs());
         let posts: Vec<_> = server.requests().into_iter().filter(|q| q.method == "POST").collect();
         assert_eq!(posts.len(), 2);
         // Talker aliases off: none sent.
         assert!(posts[0].form_field("srcId_alias").is_none());
+    }
+
+    /// A call too late for Broadcastify fails with one reason, whatever its seconds; its answer is in the log.
+    #[test]
+    fn a_skewed_call_has_one_reason_and_its_answer_logged() {
+        let (dir, server) = (testing::temp_dir("bcfy"), broadcastify());
+        let out = testing::run::<Broadcastify>([
+            hello(&dir, server.url(), json!({ "broadcastifyApiKey": "good", "broadcastifySystemId": 42 })),
+            HostMessage::CallConcluded(testing::call(&dir, "sys1", 998)),
+        ]);
+        let r = out.results();
+        assert_eq!((r[0].1, r[0].2.as_str()), (Outcome::Failed, upload::SKEW));
+        assert!(
+            out.logs().iter().any(|(_, l)| l.ends_with("Broadcastify: 1 REJECTED-CALL-SKEW-TOO-LONG-22-See:https://www.broadcastify.com/skew")),
+            "{:?}",
+            out.logs()
+        );
     }
 
     /// The menu: only a range, except one of it; all but some; and an entry that isn't a talkgroup stops it starting.

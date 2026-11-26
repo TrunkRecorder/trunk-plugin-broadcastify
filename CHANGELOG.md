@@ -7,7 +7,8 @@
   same system already sends showed Sent 0, hundreds skipped and Broadcastify Calls "unknown", with
   nothing to say why. Now: `SKIPPED---ALREADY-RECEIVED-THIS-CALL` is **already received**,
   `Skip-Unit-To-Unit-*` **unit-to-unit**, a filtered talkgroup **talkgroup filter** (no longer with
-  its number), and `REJECTED-CALL-SKEW-…` one reason whatever its seconds. Calls Broadcastify
+  its number), and `REJECTED-CALL-SKEW-…` one reason whatever its seconds. The log says which talkgroup
+  was filtered, and Broadcastify's whole skew answer. Calls Broadcastify
   skipped count as it answering, so Broadcastify Calls shows as up.
 
 ## [0.2.1]
