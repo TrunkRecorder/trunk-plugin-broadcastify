@@ -1,5 +1,12 @@
 # Changelog
 
+## [Unreleased]
+
+- **Health reports say which plugin sent them.** Each report's `recorder` now carries `reporter`:
+  `broadcastify` and this plugin's version (node health spec, 2026-11-28). The plugin updates apart from
+  Trunk Recorder Pro and behaves differently from one version to the next, so Broadcastify couldn't tell
+  from a report which plugin a node runs.
+
 ## [0.2.2]
 
 - **Short, stable reasons for skipped and failed calls** (SDK 0.17.0). Trunk Recorder Pro after 0.5.1

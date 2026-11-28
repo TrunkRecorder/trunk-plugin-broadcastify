@@ -102,9 +102,23 @@ pub fn health_url(upload_server: &str) -> Option<String> {
     s.strip_suffix("/call-upload").map(|base| format!("{base}/call-health"))
 }
 
+/// What builds and sends the reports, with its own version (the spec's `recorder.reporter`): the
+/// plugin updates apart from the recorder it runs in, and behaves differently from one version to
+/// the next.
+pub const REPORTER: &str = concat!("broadcastify ", env!("CARGO_PKG_VERSION"));
+
+/// A report as sent: the SDK's, with [`REPORTER`] in its `recorder`.
+fn body(report: &Report) -> Vec<u8> {
+    let mut v = serde_json::to_value(report).unwrap_or_default();
+    if let Some(recorder) = v.get_mut("recorder").and_then(serde_json::Value::as_object_mut) {
+        recorder.insert("reporter".into(), REPORTER.into());
+    }
+    serde_json::to_vec(&v).unwrap_or_default()
+}
+
 /// Sends a report: the service's answer, or why it wasn't taken (and what to say about it).
 fn send(agent: &ureq::Agent, url: &str, report: &Report) -> Result<Answer, (Failure, String)> {
-    let mut r = match agent.post(url).header("Content-Type", "application/json").send(serde_json::to_vec(report).unwrap_or_default().as_slice()) {
+    let mut r = match agent.post(url).header("Content-Type", "application/json").send(body(report).as_slice()) {
         Ok(r) => r,
         Err(e) => return Err((Failure::Unreachable, e.to_string())),
     };
