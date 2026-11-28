@@ -840,6 +840,17 @@ mod tests {
         assert!(r.several().is_empty(), "receivers of one site: {:?}", r.logs);
     }
 
+    /// Each report says what sent it, with the plugin's version: it updates apart from the recorder.
+    #[test]
+    fn reports_say_the_plugin_and_its_version() {
+        let r = health_run(json!({ "apiKey": "good", "systemId": 42 }), vec![], vec![]);
+        assert!(!r.reports.is_empty());
+        for r in &r.reports {
+            assert_eq!(r["recorder"]["reporter"], format!("broadcastify {}", env!("CARGO_PKG_VERSION")), "{r}");
+        }
+        assert!(health::REPORTER.len() <= 64, "the spec's limit");
+    }
+
     /// Sites that name the same system ID are one node: one report each interval with all of them,
     /// not one per site (Broadcastify takes one report per system ID each interval).
     #[test]
