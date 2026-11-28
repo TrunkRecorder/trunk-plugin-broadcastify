@@ -1,5 +1,13 @@
 # Changelog
 
+## [Unreleased]
+
+- **One server written two ways is still one server.** Systems naming the same Broadcastify system ID
+  send one health report between them (0.2.1), but only when their upload servers were written the
+  same way: one with `http://` and another with `https://`, or the host in other letter case, made two
+  reporters for one ID (two reports every interval, the same `seq`) and hid the several-sites warning.
+  Servers are now compared as the endpoint they name; reports go to the `https` one.
+
 ## [0.2.2]
 
 - **Short, stable reasons for skipped and failed calls** (SDK 0.17.0). Trunk Recorder Pro after 0.5.1

@@ -141,7 +141,8 @@ impl Plugin for Broadcastify {
         let mut targets: HashMap<String, Target> = HashMap::new();
         let mut names: HashMap<u32, String> = HashMap::new();
         // Health reports' nodes, by where they go (and certificate check).
-        let mut health_nodes: BTreeMap<(String, bool), Vec<health::Node>> = BTreeMap::new();
+        // Keyed by the endpoint however its address is written ([`endpoint`]), with the address to send to.
+        let mut health_nodes: BTreeMap<(String, bool), (String, Vec<health::Node>)> = BTreeMap::new();
         // What each system ID uploads, by server: one ID uploading several sites is said ([`sites`]).
         let mut covers: BTreeMap<(String, u32), sites::Covers> = BTreeMap::new();
         let data_dir = setup.data_dir.clone();
@@ -169,11 +170,11 @@ impl Plugin for Broadcastify {
             // A site with an ID of its own goes to it; the others, to the system's.
             for t in &s.sites {
                 if let Some((id, _)) = t.config.as_ref().and_then(node).or(node(c)) {
-                    covers.entry((server.clone(), id)).or_default().push((s.short_name.clone(), Some(t.name.clone())));
+                    covers.entry((endpoint(&server), id)).or_default().push((s.short_name.clone(), Some(t.name.clone())));
                 }
             }
             if let (true, Some((id, _))) = (s.sites.is_empty(), node(c)) {
-                covers.entry((server.clone(), id)).or_default().push((s.short_name.clone(), None));
+                covers.entry((endpoint(&server), id)).or_default().push((s.short_name.clone(), None));
             }
             let uploader = uploaders.entry((server.clone(), skip)).or_insert_with(|| Arc::new(Uploader::new(&server, skip, host.clone()))).clone();
             let filter = c.talkgroups.filter_for(&s.short_name)?;
@@ -197,7 +198,13 @@ impl Plugin for Broadcastify {
                 for n in notes {
                     host.warn(n);
                 }
-                health_nodes.entry((url, skip)).or_default().extend(nodes);
+                // Systems whose servers are one endpoint written two ways are one group, so one system ID is one
+                // report there whichever way each wrote it (https preferred).
+                let group = health_nodes.entry((endpoint(&url), skip)).or_insert_with(|| (url.clone(), Vec::new()));
+                if group.0.starts_with("http://") && url.starts_with("https://") {
+                    group.0 = url;
+                }
+                group.1.extend(nodes);
             }
             targets.insert(s.short_name.clone(), Target { lane, uploader, aliases: s.settings.talker_aliases, filter, system: s });
         }
@@ -276,7 +283,9 @@ impl Plugin for Broadcastify {
         let reports = health_nodes
             .into_iter()
             // One report per system ID: Broadcastify takes no more each interval.
-            .map(|((url, skip), nodes)| health::Reports::start(status_host.clone(), url, skip, recorder.clone(), health::one_per_id(nodes), notices.clone()))
+            .map(|((_, skip), (url, nodes))| {
+                health::Reports::start(status_host.clone(), url, skip, recorder.clone(), health::one_per_id(nodes), notices.clone())
+            })
             .collect();
         Ok(Broadcastify { queue, reports })
     }
@@ -301,6 +310,17 @@ impl Plugin for Broadcastify {
 
 /// Where a system's health reports go: none when they're off, or its upload server has no
 /// `call-health` beside its `call-upload`.
+/// An address as the endpoint it names: written in any case, with `http` or `https`, with or
+/// without a trailing slash, it's the same server (and the same Broadcastify system IDs).
+fn endpoint(url: &str) -> String {
+    let url = url.trim().trim_end_matches('/');
+    let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
+    match rest.split_once('/') {
+        Some((host, path)) => format!("{}/{path}", host.to_ascii_lowercase()),
+        None => rest.to_ascii_lowercase(),
+    }
+}
+
 fn health_url_of(settings: &Config) -> Option<String> {
     if !settings.health_reports {
         return None;
@@ -870,6 +890,36 @@ mod tests {
         assert!((2..=3).contains(&r.reports.len()), "one node: {:?}", r.reports);
         let seqs: Vec<u64> = r.reports.iter().map(|r| r["window"]["seq"].as_u64().unwrap()).collect();
         assert_eq!(seqs, (0..r.reports.len() as u64).collect::<Vec<_>>());
+    }
+
+    /// One server written two ways is one endpoint: a system ID on both is one node there, and its
+    /// sites are counted together for the several-sites notice.
+    #[test]
+    fn one_server_written_two_ways_is_one_endpoint() {
+        let e = endpoint("https://api.broadcastify.com/call-upload");
+        for other in ["https://API.Broadcastify.com/call-upload", "http://api.broadcastify.com/call-upload/", " https://api.broadcastify.com/call-upload// "] {
+            assert_eq!(endpoint(other), e, "{other}");
+        }
+        assert_ne!(endpoint("https://api.broadcastify.com/call-upload-dev"), e);
+        assert_ne!(endpoint("https://other.example/call-upload"), e);
+    }
+
+    /// Two systems naming one system ID, one writing the server with `https`: still one endpoint, so
+    /// the ID is said to upload both (and is one node there, not two).
+    #[test]
+    fn two_systems_with_one_id_on_one_server_written_two_ways_are_one_node() {
+        let id = json!({ "apiKey": "good", "systemId": 42 });
+        let (dir, server) = (testing::temp_dir("bcfy"), MockServer::start(|_: &Request| (200, r#"{}"#.into())));
+        let mut h = testing::hello(&dir, json!({ "server": format!("{}/call-upload", server.url()) }));
+        h.systems[0].config = id.clone();
+        h.systems.push(SystemInfo {
+            settings: json!({ "server": format!("{}/call-upload/", server.url().replacen("http://", "https://", 1)) }),
+            ..system(1, "sys2", id)
+        });
+        let out = testing::run::<Broadcastify>([HostMessage::Hello(h)]);
+        let several: Vec<String> = out.logs().into_iter().map(|l| l.1).filter(|l| l.contains(" is uploading ")).collect();
+        assert_eq!(several.len(), 1, "{several:?}");
+        assert!(several[0].starts_with("Broadcastify system 42 is uploading 2 sites"), "{}", several[0]);
     }
 
     /// A plugin (re)started while recording is under way has one totals to go on: no report with no
